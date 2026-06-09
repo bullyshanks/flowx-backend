@@ -1,0 +1,262 @@
+// ═══════════════════════════════════════════════════════════
+//  FlowX Database Schema
+//  Generated for PostgreSQL with Prisma
+// ═══════════════════════════════════════════════════════════
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ─── ENUMS ──────────────────────────────────────────────────
+
+enum Role {
+  CUSTOMER
+  VENDOR
+  ADMIN
+}
+
+enum VendorStatus {
+  PENDING      // just registered, awaiting admin approval
+  APPROVED
+  REJECTED
+  SUSPENDED
+}
+
+enum OrderStatus {
+  PENDING       // just placed
+  CONFIRMED     // admin/vendor confirmed
+  ASSIGNED      // assigned to a vendor
+  OUT_FOR_DELIVERY
+  DELIVERED
+  CANCELLED
+}
+
+enum PaymentMethod {
+  COD
+  JAZZCASH
+  EASYPAISA
+  BANK_TRANSFER
+  CARD
+}
+
+enum PaymentStatus {
+  PENDING
+  PAID
+  FAILED
+  REFUNDED
+}
+
+enum SubscriptionFrequency {
+  DAILY
+  WEEKLY
+  MONTHLY
+}
+
+enum SubscriptionStatus {
+  ACTIVE
+  PAUSED
+  CANCELLED
+}
+
+// ─── MODELS ─────────────────────────────────────────────────
+
+model User {
+  id            String    @id @default(uuid())
+  name          String
+  phone         String    @unique
+  email         String?   @unique
+  password      String?               // optional — guest orders allowed
+  role          Role      @default(CUSTOMER)
+  isVerified    Boolean   @default(false)
+
+  // Customer-specific
+  defaultAddress String?
+  zoneId         String?
+  zone           Zone?    @relation("UserZone", fields: [zoneId], references: [id])
+
+  // Vendor-specific
+  cnic          String?
+  vendorStatus  VendorStatus?         // null for non-vendors
+  approvedAt    DateTime?
+  rejectedReason String?
+
+  // Relations
+  orders         Order[]        @relation("CustomerOrders")
+  assignedOrders Order[]        @relation("VendorOrders")
+  subscriptions  Subscription[]
+
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  @@index([phone])
+  @@index([role])
+  @@index([vendorStatus])
+}
+
+model Zone {
+  id          String  @id @default(uuid())
+  name        String  @unique           // e.g. "North Karachi", "Gulshan"
+  city        String  @default("Karachi")
+  isActive    Boolean @default(true)
+
+  users       User[]   @relation("UserZone")
+  orders      Order[]
+  subscriptions Subscription[]
+
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@index([name])
+}
+
+model Product {
+  id           String  @id @default(uuid())
+  name         String                          // e.g. "19L Dispenser Bottle"
+  slug         String  @unique
+  description  String?
+  price        Decimal @db.Decimal(10, 2)      // in PKR
+  unit         String                          // "bottle", "set of 6", "tank"
+  minQuantity  Int     @default(1)             // 3 for 19L, 4 for refill
+  imageUrl     String?
+  isActive     Boolean @default(true)
+
+  orderItems    OrderItem[]
+  subscriptions Subscription[]
+
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  @@index([slug])
+  @@index([isActive])
+}
+
+model Order {
+  id              String        @id @default(uuid())
+  orderNumber     String        @unique         // e.g. FLW-2026-00001
+
+  // Customer info (supports guest checkout)
+  customerId      String?
+  customer        User?         @relation("CustomerOrders", fields: [customerId], references: [id])
+  guestName       String?
+  guestPhone      String?
+  guestAddress    String?
+
+  // Delivery
+  zoneId          String
+  zone            Zone          @relation(fields: [zoneId], references: [id])
+  deliveryAddress String
+  deliveryDate    DateTime?
+  deliveryTimeSlot String?                       // "Morning", "Evening"
+  deliveryNotes   String?
+
+  // Vendor assignment
+  vendorId        String?
+  vendor          User?         @relation("VendorOrders", fields: [vendorId], references: [id])
+  assignedAt      DateTime?
+  deliveredAt     DateTime?
+
+  // Pricing
+  subtotal        Decimal       @db.Decimal(10, 2)
+  deliveryFee     Decimal       @db.Decimal(10, 2) @default(0)
+  total           Decimal       @db.Decimal(10, 2)
+
+  // Payment
+  paymentMethod   PaymentMethod
+  paymentStatus   PaymentStatus @default(PENDING)
+  paymentProof    String?                        // image URL of receipt
+  transactionId   String?
+
+  // Status
+  status          OrderStatus   @default(PENDING)
+
+  // Subscription link (if from a subscription)
+  subscriptionId  String?
+  subscription    Subscription? @relation(fields: [subscriptionId], references: [id])
+
+  items           OrderItem[]
+  statusHistory   OrderStatusLog[]
+
+  createdAt       DateTime      @default(now())
+  updatedAt       DateTime      @updatedAt
+
+  @@index([orderNumber])
+  @@index([status])
+  @@index([zoneId])
+  @@index([vendorId])
+  @@index([customerId])
+  @@index([createdAt])
+}
+
+model OrderItem {
+  id         String   @id @default(uuid())
+  orderId    String
+  order      Order    @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  productId  String
+  product    Product  @relation(fields: [productId], references: [id])
+  quantity   Int
+  unitPrice  Decimal  @db.Decimal(10, 2)
+  total      Decimal  @db.Decimal(10, 2)
+
+  @@index([orderId])
+}
+
+model OrderStatusLog {
+  id         String      @id @default(uuid())
+  orderId    String
+  order      Order       @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  status     OrderStatus
+  changedBy  String?                              // userId who made the change
+  notes      String?
+  createdAt  DateTime    @default(now())
+
+  @@index([orderId])
+}
+
+model Subscription {
+  id           String                @id @default(uuid())
+  customerId   String
+  customer     User                  @relation(fields: [customerId], references: [id])
+  productId    String
+  product      Product               @relation(fields: [productId], references: [id])
+  zoneId       String
+  zone         Zone                  @relation(fields: [zoneId], references: [id])
+
+  quantity         Int
+  frequency        SubscriptionFrequency
+  preferredTimeSlot String?
+  deliveryAddress  String
+  paymentMethod    PaymentMethod
+
+  status           SubscriptionStatus @default(ACTIVE)
+  startDate        DateTime           @default(now())
+  nextDeliveryDate DateTime?
+  endDate          DateTime?
+
+  orders           Order[]
+
+  createdAt        DateTime           @default(now())
+  updatedAt        DateTime           @updatedAt
+
+  @@index([customerId])
+  @@index([status])
+  @@index([nextDeliveryDate])
+}
+
+model Otp {
+  id         String   @id @default(uuid())
+  phone      String
+  code       String                                // 6-digit code
+  purpose    String                                // "register", "login", "verify"
+  expiresAt  DateTime
+  consumedAt DateTime?
+  attempts   Int      @default(0)
+  createdAt  DateTime @default(now())
+
+  @@index([phone, purpose])
+  @@index([expiresAt])
+}
