@@ -6,6 +6,7 @@
 const prisma = require('../config/prisma');
 const { generateOrderNumber } = require('../utils/generators');
 const { sendOrderConfirmationSms, sendOrderAssignedSms } = require('../services/sms.service');
+const { createDeliveryLedgerEntries } = require('../services/ledger.service');
 
 // ─────────────────────────────────────────────
 // Place an order (guest or authenticated)
@@ -201,6 +202,19 @@ exports.acceptOrder = async (req, res, next) => {
     if (order.vendorId) {
       return res.status(409).json({ success: false, message: 'Order already assigned' });
     }
+    if (req.user.isFrozen) {
+      return res.status(403).json({ success: false, message: 'Account frozen — contact FlowX admin' });
+    }
+    if (
+      order.paymentMethod === 'COD' &&
+      req.user.codLimit != null &&
+      Number(req.user.codLiability) + Number(order.total) > Number(req.user.codLimit)
+    ) {
+      return res.status(403).json({
+        success: false,
+        message: 'COD limit exceeded — settlement required before accepting more COD orders.',
+      });
+    }
 
     const updated = await prisma.order.update({
       where: { id: order.id },
@@ -243,6 +257,9 @@ exports.updateStatus = async (req, res, next) => {
     if (req.user.role === 'VENDOR' && order.vendorId !== req.user.id) {
       return res.status(403).json({ success: false, message: 'Not your order' });
     }
+    if (req.user.role === 'VENDOR' && req.user.isFrozen) {
+      return res.status(403).json({ success: false, message: 'Account frozen — contact FlowX admin' });
+    }
 
     const updateData = {
       status,
@@ -254,6 +271,11 @@ exports.updateStatus = async (req, res, next) => {
       where: { id: order.id },
       data: updateData,
     });
+
+    // Ledger entries are created once per order (service is idempotent)
+    if (status === 'DELIVERED' && order.status !== 'DELIVERED') {
+      await createDeliveryLedgerEntries(order.id);
+    }
 
     res.json({ success: true, order: updated });
   } catch (err) {

@@ -22,6 +22,8 @@ const PRODUCTS = [
     price: 330,
     unit: 'bottle',
     minQuantity: 3,
+    riderEarningPerUnit: 40,
+    hasRiderDelivery: true,
   },
   {
     name: '19L Refill (4+ bottles)',
@@ -30,6 +32,8 @@ const PRODUCTS = [
     price: 90,
     unit: 'bottle',
     minQuantity: 4,
+    riderEarningPerUnit: 40,
+    hasRiderDelivery: true,
   },
   {
     name: '1.5L Bottle (Set of 6)',
@@ -38,6 +42,8 @@ const PRODUCTS = [
     price: 300,
     unit: 'set of 6',
     minQuantity: 1,
+    riderEarningPerUnit: 10,
+    hasRiderDelivery: true,
   },
   {
     name: '500ml Bottle (Set of 12)',
@@ -46,6 +52,8 @@ const PRODUCTS = [
     price: 480,
     unit: 'set of 12',
     minQuantity: 1,
+    riderEarningPerUnit: 5,
+    hasRiderDelivery: true,
   },
   {
     name: '1000L Water Tank',
@@ -54,6 +62,8 @@ const PRODUCTS = [
     price: 1400,
     unit: 'tank',
     minQuantity: 1,
+    riderEarningPerUnit: 0,
+    hasRiderDelivery: false,
   },
 ];
 
@@ -76,11 +86,26 @@ async function main() {
   for (const p of PRODUCTS) {
     await prisma.product.upsert({
       where: { slug: p.slug },
-      update: { price: p.price, description: p.description },
+      update: {
+        price: p.price,
+        description: p.description,
+        riderEarningPerUnit: p.riderEarningPerUnit,
+        hasRiderDelivery: p.hasRiderDelivery,
+      },
       create: p,
     });
   }
   console.log(`   ✓ ${PRODUCTS.length} products ready\n`);
+
+  // ─── Commission settings ──
+  console.log('💰 Seeding commission settings...');
+  const existingSettings = await prisma.commissionSettings.findFirst();
+  if (!existingSettings) {
+    await prisma.commissionSettings.create({
+      data: { defaultCommissionPct: 20 },
+    });
+  }
+  console.log('   ✓ Default commission: 20%\n');
 
   // ─── Admin user ──
   console.log('👤 Seeding admin user...');

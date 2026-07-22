@@ -12,6 +12,7 @@ exports.dashboard = async (req, res, next) => {
       totalCustomers, totalVendors, pendingVendors,
       todayOrders, monthOrders, pendingOrders,
       activeSubscriptions, totalRevenueAgg, monthRevenueAgg,
+      codCollectedAgg, onlineReceivedAgg, codLiabilityAgg, commissionAgg, frozenVendors,
     ] = await Promise.all([
       prisma.user.count({ where: { role: 'CUSTOMER' } }),
       prisma.user.count({ where: { role: 'VENDOR', vendorStatus: 'APPROVED' } }),
@@ -22,6 +23,11 @@ exports.dashboard = async (req, res, next) => {
       prisma.subscription.count({ where: { status: 'ACTIVE' } }),
       prisma.order.aggregate({ _sum: { total: true }, where: { status: 'DELIVERED' } }),
       prisma.order.aggregate({ _sum: { total: true }, where: { status: 'DELIVERED', createdAt: { gte: startOfMonth } } }),
+      prisma.order.aggregate({ _sum: { total: true }, where: { status: 'DELIVERED', paymentMethod: 'COD' } }),
+      prisma.order.aggregate({ _sum: { total: true }, where: { status: 'DELIVERED', paymentMethod: { not: 'COD' } } }),
+      prisma.user.aggregate({ _sum: { codLiability: true }, where: { role: 'VENDOR' } }),
+      prisma.ledgerEntry.aggregate({ _sum: { amount: true }, where: { type: 'COMMISSION_DEDUCTED' } }),
+      prisma.user.count({ where: { role: 'VENDOR', isFrozen: true } }),
     ]);
 
     res.json({
@@ -33,6 +39,13 @@ exports.dashboard = async (req, res, next) => {
         revenue: {
           total: Number(totalRevenueAgg._sum.total || 0),
           month: Number(monthRevenueAgg._sum.total || 0),
+        },
+        finance: {
+          codCollected: Number(codCollectedAgg._sum.total || 0),
+          onlineReceived: Number(onlineReceivedAgg._sum.total || 0),
+          outstandingCodLiability: Number(codLiabilityAgg._sum.codLiability || 0),
+          commissionRevenue: -Number(commissionAgg._sum.amount || 0),
+          frozenVendors,
         },
       },
     });

@@ -16,6 +16,7 @@ const orderRoutes = require('./routes/order.routes');
 const vendorRoutes = require('./routes/vendor.routes');
 const subscriptionRoutes = require('./routes/subscription.routes');
 const adminRoutes = require('./routes/admin.routes');
+const financeRoutes = require('./routes/finance.routes');
 
 const app = express();
 
@@ -63,6 +64,7 @@ app.use('/api/products', productRoutes);
 app.use('/api/orders', orderRoutes);
 app.use('/api/vendors', vendorRoutes);
 app.use('/api/subscriptions', subscriptionRoutes);
+app.use('/api/admin/finance', financeRoutes);
 app.use('/api/admin', adminRoutes);
 
 // ── 404 handler ──
