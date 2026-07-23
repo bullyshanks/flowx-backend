@@ -20,7 +20,11 @@ const requireAuth = async (req, res, next) => {
 
     const user = await prisma.user.findUnique({
       where: { id: decoded.id },
-      select: { id: true, name: true, phone: true, role: true, vendorStatus: true, zoneId: true, isVerified: true, codLimit: true, codLiability: true, isFrozen: true },
+      select: {
+        id: true, name: true, phone: true, role: true, vendorStatus: true, zoneId: true, isVerified: true,
+        codLimit: true, codLiability: true, isFrozen: true,
+        kycStatus: true, isOnline: true, isOpen: true, stockStatus: true,
+      },
     });
 
     if (!user) {
@@ -48,7 +52,8 @@ const requireRole = (...roles) => (req, res, next) => {
 };
 
 /**
- * Vendor-specific — must also be APPROVED
+ * Vendor-specific — must have BOTH account approval (vendorStatus) and
+ * KYC approval before they can go live (accept/manage orders).
  */
 const requireApprovedVendor = (req, res, next) => {
   if (req.user?.role !== 'VENDOR') {
@@ -60,7 +65,36 @@ const requireApprovedVendor = (req, res, next) => {
       message: `Vendor account status: ${req.user.vendorStatus}. Awaiting admin approval.`,
     });
   }
+  if (req.user.kycStatus !== 'APPROVED') {
+    return res.status(403).json({
+      success: false,
+      message: `KYC status: ${req.user.kycStatus}. Awaiting verification before you can go live.`,
+    });
+  }
   next();
 };
 
-module.exports = { requireAuth, requireRole, requireApprovedVendor };
+/**
+ * Rider-specific — must have BOTH account approval (vendorStatus, reused as
+ * the generic approval-status field) and KYC approval before they can go live.
+ */
+const requireApprovedRider = (req, res, next) => {
+  if (req.user?.role !== 'RIDER') {
+    return res.status(403).json({ success: false, message: 'Rider access required' });
+  }
+  if (req.user.vendorStatus !== 'APPROVED') {
+    return res.status(403).json({
+      success: false,
+      message: `Rider account status: ${req.user.vendorStatus}. Awaiting admin approval.`,
+    });
+  }
+  if (req.user.kycStatus !== 'APPROVED') {
+    return res.status(403).json({
+      success: false,
+      message: `KYC status: ${req.user.kycStatus}. Awaiting verification before you can go live.`,
+    });
+  }
+  next();
+};
+
+module.exports = { requireAuth, requireRole, requireApprovedVendor, requireApprovedRider };

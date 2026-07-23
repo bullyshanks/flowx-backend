@@ -17,20 +17,33 @@ datasource db {
 enum Role {
   CUSTOMER
   VENDOR
+  RIDER
   ADMIN
 }
 
 enum VendorStatus {
-  PENDING      // just registered, awaiting admin approval
+  PENDING // just registered, awaiting admin approval
   APPROVED
   REJECTED
   SUSPENDED
 }
 
+enum KycStatus {
+  NOT_SUBMITTED
+  PENDING
+  APPROVED
+  REJECTED
+}
+
+enum FulfillmentType {
+  SELF_PICKUP
+  DELIVERY
+}
+
 enum OrderStatus {
-  PENDING       // just placed
-  CONFIRMED     // admin/vendor confirmed
-  ASSIGNED      // assigned to a vendor
+  PENDING // just placed
+  CONFIRMED // admin/vendor confirmed
+  ASSIGNED // assigned to a vendor
   OUT_FOR_DELIVERY
   DELIVERED
   CANCELLED
@@ -81,37 +94,57 @@ enum SettlementStatus {
 // ─── MODELS ─────────────────────────────────────────────────
 
 model User {
-  id            String    @id @default(uuid())
-  name          String
-  phone         String    @unique
-  email         String?   @unique
-  password      String?               // optional — guest orders allowed
-  role          Role      @default(CUSTOMER)
-  isVerified    Boolean   @default(false)
+  id         String  @id @default(uuid())
+  name       String
+  phone      String  @unique
+  email      String? @unique
+  password   String? // optional — guest orders allowed
+  role       Role    @default(CUSTOMER)
+  isVerified Boolean @default(false)
 
   // Customer-specific
   defaultAddress String?
   zoneId         String?
-  zone           Zone?    @relation("UserZone", fields: [zoneId], references: [id])
+  zone           Zone?   @relation("UserZone", fields: [zoneId], references: [id])
 
   // Vendor-specific
-  cnic          String?
-  vendorStatus  VendorStatus?         // null for non-vendors
-  approvedAt    DateTime?
+  cnic           String?
+  vendorStatus   VendorStatus? // null for non-vendors
+  approvedAt     DateTime?
   rejectedReason String?
-  codLimit      Decimal? @db.Decimal(10, 2)   // null = unlimited
-  codLiability  Decimal  @default(0) @db.Decimal(10, 2)   // running outstanding balance, updated on order/settlement
-  isFrozen      Boolean  @default(false)   // admin can freeze financial activity
+  codLimit       Decimal?      @db.Decimal(10, 2) // null = unlimited — shared gate for VENDOR and RIDER
+  codLiability   Decimal       @default(0) @db.Decimal(10, 2) // running outstanding balance — shared for VENDOR and RIDER
+  isFrozen       Boolean       @default(false) // admin can freeze financial activity — shared for VENDOR and RIDER
+
+  // KYC (shared by VENDOR and RIDER)
+  cnicFront String? // file URL
+  cnicBack  String?
+  selfieUrl String?
+  kycStatus KycStatus @default(NOT_SUBMITTED)
+
+  // Vendor-specific (new)
+  businessName String?
+  shopDetails  String?
+  isOpen       Boolean @default(true) // vendor open/closed toggle
+  stockStatus  Boolean @default(true) // in stock / out of stock
+
+  // Rider-specific (new)
+  vehicleDetails String?
+  isOnline       Boolean @default(false) // online/offline toggle
 
   // Relations
-  orders         Order[]        @relation("CustomerOrders")
-  assignedOrders Order[]        @relation("VendorOrders")
-  subscriptions  Subscription[]
-  ledgerEntries  LedgerEntry[]
-  settlements    Settlement[]
+  orders             Order[]            @relation("CustomerOrders")
+  assignedOrders     Order[]            @relation("VendorOrders")
+  offeredOrders      Order[]            @relation("OfferedVendorOrders")
+  riderOrders        Order[]            @relation("RiderOrders")
+  subscriptions      Subscription[]
+  ledgerEntries      LedgerEntry[]
+  settlements        Settlement[]
+  riderLedgerEntries RiderLedgerEntry[]
+  riderSettlements   RiderSettlement[]
 
-  createdAt     DateTime  @default(now())
-  updatedAt     DateTime  @updatedAt
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 
   @@index([phone])
   @@index([role])
@@ -119,152 +152,168 @@ model User {
 }
 
 model Zone {
-  id          String  @id @default(uuid())
-  name        String  @unique           // e.g. "North Karachi", "Gulshan"
-  city        String  @default("Karachi")
-  isActive    Boolean @default(true)
+  id       String  @id @default(uuid())
+  name     String  @unique // e.g. "North Karachi", "Gulshan"
+  city     String  @default("Karachi")
+  isActive Boolean @default(true)
 
-  users       User[]   @relation("UserZone")
-  orders      Order[]
+  users         User[]         @relation("UserZone")
+  orders        Order[]
   subscriptions Subscription[]
 
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 
   @@index([name])
 }
 
 model Product {
-  id           String  @id @default(uuid())
-  name         String                          // e.g. "19L Dispenser Bottle"
-  slug         String  @unique
-  description  String?
-  price        Decimal @db.Decimal(10, 2)      // in PKR
-  unit         String                          // "bottle", "set of 6", "tank"
-  minQuantity  Int     @default(1)             // 3 for 19L, 4 for refill
-  imageUrl     String?
-  isActive     Boolean @default(true)
-  commissionPct        Decimal? @db.Decimal(5, 2)   // null = use global default (20%)
-  riderEarningPerUnit  Decimal  @default(0) @db.Decimal(10, 2)
-  hasRiderDelivery     Boolean  @default(true)       // false for 1000L tank
+  id                  String   @id @default(uuid())
+  name                String // e.g. "19L Dispenser Bottle"
+  slug                String   @unique
+  description         String?
+  price               Decimal  @db.Decimal(10, 2) // in PKR
+  unit                String // "bottle", "set of 6", "tank"
+  minQuantity         Int      @default(1) // 3 for 19L, 4 for refill
+  imageUrl            String?
+  isActive            Boolean  @default(true)
+  commissionPct       Decimal? @db.Decimal(5, 2) // null = use global default (20%)
+  riderEarningPerUnit Decimal  @default(0) @db.Decimal(10, 2)
+  hasRiderDelivery    Boolean  @default(true) // false for 1000L tank
 
   orderItems    OrderItem[]
   subscriptions Subscription[]
 
-  createdAt    DateTime @default(now())
-  updatedAt    DateTime @updatedAt
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 
   @@index([slug])
   @@index([isActive])
 }
 
 model Order {
-  id              String        @id @default(uuid())
-  orderNumber     String        @unique         // e.g. FLW-2026-00001
+  id          String @id @default(uuid())
+  orderNumber String @unique // e.g. FLW-2026-00001
 
   // Customer info (supports guest checkout)
-  customerId      String?
-  customer        User?         @relation("CustomerOrders", fields: [customerId], references: [id])
-  guestName       String?
-  guestPhone      String?
-  guestAddress    String?
+  customerId   String?
+  customer     User?   @relation("CustomerOrders", fields: [customerId], references: [id])
+  guestName    String?
+  guestPhone   String?
+  guestAddress String?
 
   // Delivery
-  zoneId          String
-  zone            Zone          @relation(fields: [zoneId], references: [id])
-  deliveryAddress String
-  deliveryDate    DateTime?
-  deliveryTimeSlot String?                       // "Morning", "Evening"
-  deliveryNotes   String?
+  zoneId           String
+  zone             Zone      @relation(fields: [zoneId], references: [id])
+  deliveryAddress  String
+  deliveryDate     DateTime?
+  deliveryTimeSlot String? // "Morning", "Evening"
+  deliveryNotes    String?
 
-  // Vendor assignment
-  vendorId        String?
-  vendor          User?         @relation("VendorOrders", fields: [vendorId], references: [id])
-  assignedAt      DateTime?
-  deliveredAt     DateTime?
+  // Fulfillment
+  fulfillmentType FulfillmentType @default(DELIVERY)
+
+  // Vendor assignment — offer/accept flow: order is offered to one vendor at a
+  // time (offeredVendorId); accepting sets vendorId and clears the offer.
+  vendorId             String?
+  vendor               User?     @relation("VendorOrders", fields: [vendorId], references: [id])
+  offeredVendorId      String?
+  offeredVendor        User?     @relation("OfferedVendorOrders", fields: [offeredVendorId], references: [id])
+  vendorAcceptDeadline DateTime? // now() + accept window; expiry reassigns to next vendor
+  assignedAt           DateTime?
+  deliveredAt          DateTime?
+
+  // Rider assignment (delivery orders only)
+  riderId             String?
+  rider               User?     @relation("RiderOrders", fields: [riderId], references: [id])
+  riderAssignedAt     DateTime?
+  riderAcceptDeadline DateTime? // now() + 60-120s, for the accept/reject timer
 
   // Pricing
-  subtotal        Decimal       @db.Decimal(10, 2)
-  deliveryFee     Decimal       @db.Decimal(10, 2) @default(0)
-  total           Decimal       @db.Decimal(10, 2)
+  subtotal    Decimal @db.Decimal(10, 2)
+  deliveryFee Decimal @default(0) @db.Decimal(10, 2)
+  total       Decimal @db.Decimal(10, 2)
 
   // Payment
-  paymentMethod   PaymentMethod
-  paymentStatus   PaymentStatus @default(PENDING)
-  paymentProof    String?                        // image URL of receipt
-  transactionId   String?
+  paymentMethod PaymentMethod
+  paymentStatus PaymentStatus @default(PENDING)
+  paymentProof  String? // image URL of receipt
+  transactionId String?
 
   // Status
-  status          OrderStatus   @default(PENDING)
+  status OrderStatus @default(PENDING)
 
   // Subscription link (if from a subscription)
-  subscriptionId  String?
-  subscription    Subscription? @relation(fields: [subscriptionId], references: [id])
+  subscriptionId String?
+  subscription   Subscription? @relation(fields: [subscriptionId], references: [id])
 
-  items           OrderItem[]
-  statusHistory   OrderStatusLog[]
-  ledgerEntries   LedgerEntry[]
+  items              OrderItem[]
+  statusHistory      OrderStatusLog[]
+  ledgerEntries      LedgerEntry[]
+  riderLedgerEntries RiderLedgerEntry[]
 
-  createdAt       DateTime      @default(now())
-  updatedAt       DateTime      @updatedAt
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 
   @@index([orderNumber])
   @@index([status])
   @@index([zoneId])
   @@index([vendorId])
+  @@index([offeredVendorId])
+  @@index([riderId])
   @@index([customerId])
   @@index([createdAt])
 }
 
 model OrderItem {
-  id         String   @id @default(uuid())
-  orderId    String
-  order      Order    @relation(fields: [orderId], references: [id], onDelete: Cascade)
-  productId  String
-  product    Product  @relation(fields: [productId], references: [id])
-  quantity   Int
-  unitPrice  Decimal  @db.Decimal(10, 2)
-  total      Decimal  @db.Decimal(10, 2)
+  id        String  @id @default(uuid())
+  orderId   String
+  order     Order   @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  productId String
+  product   Product @relation(fields: [productId], references: [id])
+  quantity  Int
+  unitPrice Decimal @db.Decimal(10, 2)
+  total     Decimal @db.Decimal(10, 2)
 
   @@index([orderId])
 }
 
 model OrderStatusLog {
-  id         String      @id @default(uuid())
-  orderId    String
-  order      Order       @relation(fields: [orderId], references: [id], onDelete: Cascade)
-  status     OrderStatus
-  changedBy  String?                              // userId who made the change
-  notes      String?
-  createdAt  DateTime    @default(now())
+  id        String      @id @default(uuid())
+  orderId   String
+  order     Order       @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  status    OrderStatus
+  changedBy String? // userId who made the change
+  notes     String?
+  createdAt DateTime    @default(now())
 
   @@index([orderId])
 }
 
 model Subscription {
-  id           String                @id @default(uuid())
-  customerId   String
-  customer     User                  @relation(fields: [customerId], references: [id])
-  productId    String
-  product      Product               @relation(fields: [productId], references: [id])
-  zoneId       String
-  zone         Zone                  @relation(fields: [zoneId], references: [id])
+  id         String  @id @default(uuid())
+  customerId String
+  customer   User    @relation(fields: [customerId], references: [id])
+  productId  String
+  product    Product @relation(fields: [productId], references: [id])
+  zoneId     String
+  zone       Zone    @relation(fields: [zoneId], references: [id])
 
-  quantity         Int
-  frequency        SubscriptionFrequency
+  quantity          Int
+  frequency         SubscriptionFrequency
   preferredTimeSlot String?
-  deliveryAddress  String
-  paymentMethod    PaymentMethod
+  deliveryAddress   String
+  paymentMethod     PaymentMethod
 
   status           SubscriptionStatus @default(ACTIVE)
   startDate        DateTime           @default(now())
   nextDeliveryDate DateTime?
   endDate          DateTime?
 
-  orders           Order[]
+  orders Order[]
 
-  createdAt        DateTime           @default(now())
-  updatedAt        DateTime           @updatedAt
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 
   @@index([customerId])
   @@index([status])
@@ -272,9 +321,9 @@ model Subscription {
 }
 
 model CommissionSettings {
-  id                     String  @id @default(uuid())
-  defaultCommissionPct   Decimal @default(20) @db.Decimal(5, 2)
-  updatedAt              DateTime @updatedAt
+  id                   String   @id @default(uuid())
+  defaultCommissionPct Decimal  @default(20) @db.Decimal(5, 2)
+  updatedAt            DateTime @updatedAt
 }
 
 model LedgerEntry {
@@ -284,7 +333,7 @@ model LedgerEntry {
   orderId     String?
   order       Order?          @relation(fields: [orderId], references: [id])
   type        LedgerEntryType
-  amount      Decimal         @db.Decimal(10, 2)   // positive = credit to vendor, negative = debit
+  amount      Decimal         @db.Decimal(10, 2) // positive = credit to vendor, negative = debit
   description String?
   createdAt   DateTime        @default(now())
 
@@ -293,15 +342,15 @@ model LedgerEntry {
 }
 
 model Settlement {
-  id               String           @id @default(uuid())
-  vendorId         String
-  vendor           User             @relation(fields: [vendorId], references: [id])
-  periodStart      DateTime
-  periodEnd        DateTime
-  totalProductValue Decimal         @db.Decimal(10, 2)
-  totalRiderEarning Decimal         @db.Decimal(10, 2)
-  totalCommission   Decimal         @db.Decimal(10, 2)
-  netPayable        Decimal         @db.Decimal(10, 2)   // can be negative if vendor owes FlowX (COD case)
+  id                String           @id @default(uuid())
+  vendorId          String
+  vendor            User             @relation(fields: [vendorId], references: [id])
+  periodStart       DateTime
+  periodEnd         DateTime
+  totalProductValue Decimal          @db.Decimal(10, 2)
+  totalRiderEarning Decimal          @db.Decimal(10, 2)
+  totalCommission   Decimal          @db.Decimal(10, 2)
+  netPayable        Decimal          @db.Decimal(10, 2) // can be negative if vendor owes FlowX (COD case)
   status            SettlementStatus @default(PENDING)
   paymentMethod     String?
   paymentReference  String?
@@ -313,15 +362,49 @@ model Settlement {
   @@index([status])
 }
 
+model RiderLedgerEntry {
+  id          String          @id @default(uuid())
+  riderId     String
+  rider       User            @relation(fields: [riderId], references: [id])
+  orderId     String?
+  order       Order?          @relation(fields: [orderId], references: [id])
+  type        LedgerEntryType // reuses the existing enum: RIDER_EARNING, REFUND, ADJUSTMENT, SETTLEMENT_PAYOUT
+  amount      Decimal         @db.Decimal(10, 2) // positive = credit to rider, negative = debit
+  description String?
+  createdAt   DateTime        @default(now())
+
+  @@index([riderId])
+  @@index([orderId])
+}
+
+model RiderSettlement {
+  id               String           @id @default(uuid())
+  riderId          String
+  rider            User             @relation(fields: [riderId], references: [id])
+  periodStart      DateTime
+  periodEnd        DateTime
+  totalEarning     Decimal          @db.Decimal(10, 2)
+  netPayable       Decimal          @db.Decimal(10, 2)
+  status           SettlementStatus @default(PENDING)
+  paymentMethod    String?
+  paymentReference String?
+  approvedAt       DateTime?
+  paidAt           DateTime?
+  createdAt        DateTime         @default(now())
+
+  @@index([riderId])
+  @@index([status])
+}
+
 model Otp {
-  id         String   @id @default(uuid())
+  id         String    @id @default(uuid())
   phone      String
-  code       String                                // 6-digit code
-  purpose    String                                // "register", "login", "verify"
+  code       String // 6-digit code
+  purpose    String // "register", "login", "verify"
   expiresAt  DateTime
   consumedAt DateTime?
-  attempts   Int      @default(0)
-  createdAt  DateTime @default(now())
+  attempts   Int       @default(0)
+  createdAt  DateTime  @default(now())
 
   @@index([phone, purpose])
   @@index([expiresAt])

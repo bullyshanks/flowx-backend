@@ -5,7 +5,7 @@
 // ═══════════════════════════════════════════════════════════
 
 const prisma = require('../config/prisma');
-const { getVendorWalletSummary, round2 } = require('../services/ledger.service');
+const { getVendorWalletSummary, getRiderWalletSummary, round2 } = require('../services/ledger.service');
 
 // Current week: Monday 00:00 → next Monday 00:00
 function currentWeekRange() {
@@ -20,21 +20,26 @@ function currentWeekRange() {
 
 /**
  * Sum a vendor's ledger entries for a settlement period.
- * netPayable: COD product value is excluded (vendor already holds that cash),
- * so a COD-heavy period can come out negative — vendor owes FlowX.
+ * netPayable: product value is excluded only when the VENDOR physically held
+ * the COD cash (self-pickup) — for delivery COD orders the rider held the
+ * cash instead, so the vendor is still owed the full product value here.
+ * A self-pickup-COD-heavy period can still come out negative — vendor owes
+ * FlowX the commission on cash they collected themselves.
  */
 function computePeriodTotals(entries) {
   let totalProductValue = 0;
-  let totalRiderEarning = 0;
+  let totalRiderEarning = 0; // always 0 post rider-as-role split; kept for API shape
   let totalCommission = 0;
   let netPayable = 0;
 
   for (const e of entries) {
     const amount = Number(e.amount);
+    const vendorHeldCash = e.order?.paymentMethod === 'COD' && e.order?.fulfillmentType === 'SELF_PICKUP';
     if (e.type === 'PRODUCT_VALUE') {
       totalProductValue += amount;
-      if (e.order?.paymentMethod !== 'COD') netPayable += amount;
+      if (!vendorHeldCash) netPayable += amount;
     } else if (e.type === 'RIDER_EARNING') {
+      // No longer created on the vendor ledger — retained for older rows only.
       totalRiderEarning += amount;
       netPayable += amount;
     } else if (e.type === 'COMMISSION_DEDUCTED') {
@@ -61,7 +66,7 @@ async function unsettledEntriesByVendor(periodStart, periodEnd) {
       createdAt: { gte: periodStart, lt: periodEnd },
       type: { not: 'SETTLEMENT_PAYOUT' },
     },
-    include: { order: { select: { paymentMethod: true } } },
+    include: { order: { select: { paymentMethod: true, fulfillmentType: true } } },
   });
 
   const byVendor = new Map();
@@ -199,6 +204,55 @@ exports.getVendorWallet = async (req, res, next) => {
       },
       transactions: entries,
       total,
+    });
+  } catch (err) {
+    next(err);
+  }
+};
+
+// ─────────────────────────────────────────────
+// GET /riders/:id/wallet
+// ─────────────────────────────────────────────
+exports.getRiderWallet = async (req, res, next) => {
+  try {
+    const rider = await prisma.user.findFirst({
+      where: { id: req.params.id, role: 'RIDER' },
+      select: {
+        id: true, name: true, phone: true, vendorStatus: true, kycStatus: true, vehicleDetails: true,
+        codLimit: true, codLiability: true, isFrozen: true,
+        zone: { select: { name: true } },
+      },
+    });
+    if (!rider) {
+      return res.status(404).json({ success: false, message: 'Rider not found' });
+    }
+
+    const { limit = 20, offset = 0 } = req.query;
+    const [summary, entries, total, settlements] = await Promise.all([
+      getRiderWalletSummary(rider.id),
+      prisma.riderLedgerEntry.findMany({
+        where: { riderId: rider.id },
+        orderBy: { createdAt: 'desc' },
+        take: Number(limit),
+        skip: Number(offset),
+        include: { order: { select: { orderNumber: true, paymentMethod: true } } },
+      }),
+      prisma.riderLedgerEntry.count({ where: { riderId: rider.id } }),
+      prisma.riderSettlement.findMany({ where: { riderId: rider.id }, orderBy: { createdAt: 'desc' } }),
+    ]);
+
+    res.json({
+      success: true,
+      rider,
+      wallet: {
+        ...summary,
+        codLiability: Number(rider.codLiability),
+        codLimit: rider.codLimit != null ? Number(rider.codLimit) : null,
+        isFrozen: rider.isFrozen,
+      },
+      transactions: entries,
+      total,
+      settlements,
     });
   } catch (err) {
     next(err);

@@ -6,6 +6,7 @@ const { requireAuth, requireRole, requireApprovedVendor } = require('../middlewa
 
 // ── Vendor self ──
 router.get('/dashboard', requireAuth, requireApprovedVendor, ctrl.dashboard);
+router.patch('/me/storefront', requireAuth, requireApprovedVendor, ctrl.updateStorefront);
 router.get('/wallet', requireAuth, requireApprovedVendor, walletCtrl.getWallet);
 router.get('/wallet/transactions', requireAuth, requireApprovedVendor, walletCtrl.getTransactions);
 router.get('/wallet/settlements', requireAuth, requireApprovedVendor, walletCtrl.getSettlements);

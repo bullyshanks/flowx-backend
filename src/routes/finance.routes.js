@@ -13,6 +13,8 @@ router.get('/vendors/:id/wallet', ctrl.getVendorWallet);
 router.patch('/vendors/:id/cod-limit', ctrl.setCodLimit);
 router.patch('/vendors/:id/freeze', ctrl.toggleFreeze);
 
+router.get('/riders/:id/wallet', ctrl.getRiderWallet);
+
 router.get('/settlements/pending', ctrl.pendingSettlements);
 router.post('/settlements/generate', ctrl.generateSettlements);
 router.post('/settlements/:id/approve', ctrl.approveSettlement);

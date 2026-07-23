@@ -21,7 +21,8 @@ exports.listVendors = async (req, res, next) => {
       },
       orderBy: { createdAt: 'desc' },
       select: {
-        id: true, name: true, phone: true, cnic: true, vendorStatus: true,
+        id: true, name: true, phone: true, cnic: true, vendorStatus: true, kycStatus: true,
+        businessName: true, shopDetails: true, isOpen: true, stockStatus: true,
         approvedAt: true, createdAt: true,
         zone: { select: { id: true, name: true } },
         _count: { select: { assignedOrders: true } },
@@ -85,6 +86,30 @@ exports.changeVendorZone = async (req, res, next) => {
       where: { id: req.params.id, role: 'VENDOR' },
       data: { zoneId },
       include: { zone: true },
+    });
+    res.json({ success: true, vendor });
+  } catch (err) {
+    next(err);
+  }
+};
+
+// ─────────────────────────────────────────────
+// Vendor: update my own storefront (open/closed, in stock/out of stock)
+// ─────────────────────────────────────────────
+exports.updateStorefront = async (req, res, next) => {
+  try {
+    const { isOpen, stockStatus } = req.body;
+    const data = {};
+    if (typeof isOpen === 'boolean') data.isOpen = isOpen;
+    if (typeof stockStatus === 'boolean') data.stockStatus = stockStatus;
+    if (Object.keys(data).length === 0) {
+      return res.status(400).json({ success: false, message: 'Nothing to update' });
+    }
+
+    const vendor = await prisma.user.update({
+      where: { id: req.user.id },
+      data,
+      select: { id: true, isOpen: true, stockStatus: true },
     });
     res.json({ success: true, vendor });
   } catch (err) {

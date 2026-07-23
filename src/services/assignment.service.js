@@ -1,0 +1,135 @@
+// ═══════════════════════════════════════════════════════════
+//  Assignment Service
+//  Vendor/rider offer-and-accept flow with a timed window and
+//  check-on-read expiry (no cron/queue yet — see reassignIfExpired).
+// ═══════════════════════════════════════════════════════════
+
+const prisma = require('../config/prisma');
+const { ACCEPT_WINDOW_SECONDS } = require('../config/assignment');
+
+const acceptDeadline = () => new Date(Date.now() + ACCEPT_WINDOW_SECONDS * 1000);
+
+// A rider is needed only for DELIVERY orders, and only when every item in the
+// order wants rider delivery. Any item with hasRiderDelivery=false (currently
+// just the 1000L tank) means the vendor delivers the whole order themselves —
+// bulky/self-delivered items can't be split onto a rider's bike.
+function needsRider(order) {
+  return order.fulfillmentType === 'DELIVERY' && order.items.every((i) => i.product.hasRiderDelivery);
+}
+
+// Next eligible vendor in the order's zone, excluding one id (the vendor whose
+// offer just expired/was rejected). Simple id-order cycling — good enough for
+// a check-on-read pattern; a real dispatcher can replace this later.
+async function findNextVendor(order, excludeId) {
+  return prisma.user.findFirst({
+    where: {
+      role: 'VENDOR',
+      vendorStatus: 'APPROVED',
+      kycStatus: 'APPROVED',
+      isFrozen: false,
+      isOpen: true,
+      stockStatus: true,
+      zoneId: order.zoneId,
+      ...(excludeId && { id: { not: excludeId } }),
+    },
+    orderBy: { id: 'asc' },
+  });
+}
+
+async function findNextRider(order, excludeId) {
+  return prisma.user.findFirst({
+    where: {
+      role: 'RIDER',
+      vendorStatus: 'APPROVED',
+      kycStatus: 'APPROVED',
+      isOnline: true,
+      isFrozen: false,
+      zoneId: order.zoneId,
+      ...(excludeId && { id: { not: excludeId } }),
+    },
+    orderBy: { id: 'asc' },
+  });
+}
+
+// Offer the order to a vendor (or clear the offer if none available).
+async function tryAssignVendor(orderId, excludeVendorId = null) {
+  const order = await prisma.order.findUnique({ where: { id: orderId } });
+  if (!order || order.vendorId) return order; // already accepted, nothing to do
+
+  const candidate = await findNextVendor(order, excludeVendorId);
+  const updated = await prisma.order.update({
+    where: { id: order.id },
+    data: candidate
+      ? { offeredVendorId: candidate.id, vendorAcceptDeadline: acceptDeadline() }
+      : { offeredVendorId: null, vendorAcceptDeadline: null },
+  });
+  await prisma.orderStatusLog.create({
+    data: {
+      orderId: order.id,
+      status: order.status,
+      notes: candidate ? `Offered to vendor ${candidate.name}` : 'No vendors available in zone',
+    },
+  });
+  return updated;
+}
+
+// Offer the order to a rider (or leave unassigned + log if none available).
+async function tryAssignRider(orderId, excludeRiderId = null) {
+  const order = await prisma.order.findUnique({
+    where: { id: orderId },
+    include: { items: { include: { product: true } } },
+  });
+  if (!order || !needsRider(order)) return order;
+
+  const candidate = await findNextRider(order, excludeRiderId);
+  const updated = await prisma.order.update({
+    where: { id: order.id },
+    data: candidate
+      ? { riderId: candidate.id, riderAssignedAt: new Date(), riderAcceptDeadline: acceptDeadline() }
+      : { riderId: null, riderAssignedAt: null, riderAcceptDeadline: null },
+  });
+  await prisma.orderStatusLog.create({
+    data: {
+      orderId: order.id,
+      status: order.status,
+      notes: candidate ? `Offered to rider ${candidate.name}` : 'No riders available in zone',
+    },
+  });
+  return updated;
+}
+
+/**
+ * Check-on-read expiry: call before acting on an order fetched for
+ * tracking/queues/accept. If the current vendor or rider offer has expired,
+ * reassign to the next candidate (or clear it for admin to handle manually).
+ * Idempotent / cheap when nothing has expired.
+ */
+async function reassignIfExpired(orderId) {
+  let order = await prisma.order.findUnique({ where: { id: orderId } });
+  if (!order || order.status === 'DELIVERED' || order.status === 'CANCELLED') return order;
+
+  const now = Date.now();
+
+  // Vendor offer expired and never accepted
+  if (!order.vendorId && order.offeredVendorId && order.vendorAcceptDeadline && order.vendorAcceptDeadline.getTime() < now) {
+    order = await tryAssignVendor(order.id, order.offeredVendorId);
+  }
+
+  // Rider offer expired and never accepted (accepted = riderAcceptDeadline cleared to null)
+  if (order.riderId && order.riderAcceptDeadline && order.riderAcceptDeadline.getTime() < now) {
+    order = await tryAssignRider(order.id, order.riderId);
+  }
+
+  return order;
+}
+
+module.exports = {
+  ACCEPT_WINDOW_SECONDS,
+  needsRider,
+  findNextVendor,
+  findNextRider,
+  tryAssignVendor,
+  tryAssignRider,
+  reassignIfExpired,
+  acceptDeadline,
+};

@@ -1,0 +1,192 @@
+// ═══════════════════════════════════════════════════════════
+//  Rider Controller
+//  Admin: list/approve/reject riders (account-status gate).
+//  Mirrors vendor.controller.js — vendorStatus is reused as the
+//  generic account-approval status for both roles.
+// ═══════════════════════════════════════════════════════════
+
+const prisma = require('../config/prisma');
+
+// ─────────────────────────────────────────────
+// Admin: list all riders (filterable)
+// ─────────────────────────────────────────────
+exports.listRiders = async (req, res, next) => {
+  try {
+    const { status, zoneId } = req.query;
+
+    const riders = await prisma.user.findMany({
+      where: {
+        role: 'RIDER',
+        ...(status && { vendorStatus: status }),
+        ...(zoneId && { zoneId }),
+      },
+      orderBy: { createdAt: 'desc' },
+      select: {
+        id: true, name: true, phone: true, vendorStatus: true, kycStatus: true,
+        vehicleDetails: true, isOnline: true, isFrozen: true, codLimit: true,
+        approvedAt: true, createdAt: true,
+        zone: { select: { id: true, name: true } },
+        _count: { select: { riderOrders: true } },
+      },
+    });
+
+    res.json({ success: true, riders });
+  } catch (err) {
+    next(err);
+  }
+};
+
+// ─────────────────────────────────────────────
+// Admin: approve a rider's account (separate from KYC approval)
+// ─────────────────────────────────────────────
+exports.approveRider = async (req, res, next) => {
+  try {
+    const rider = await prisma.user.update({
+      where: { id: req.params.id, role: 'RIDER' },
+      data: {
+        vendorStatus: 'APPROVED',
+        approvedAt: new Date(),
+        isVerified: true,
+      },
+    });
+
+    res.json({ success: true, message: 'Rider account approved', rider });
+  } catch (err) {
+    next(err);
+  }
+};
+
+// ─────────────────────────────────────────────
+// Admin: reject a rider's account
+// ─────────────────────────────────────────────
+exports.rejectRider = async (req, res, next) => {
+  try {
+    const { reason } = req.body;
+    const rider = await prisma.user.update({
+      where: { id: req.params.id, role: 'RIDER' },
+      data: {
+        vendorStatus: 'REJECTED',
+        rejectedReason: reason || 'Application rejected',
+      },
+    });
+    res.json({ success: true, message: 'Rider rejected', rider });
+  } catch (err) {
+    next(err);
+  }
+};
+
+// ─────────────────────────────────────────────
+// Admin: change rider zone
+// ─────────────────────────────────────────────
+exports.changeRiderZone = async (req, res, next) => {
+  try {
+    const { zoneId } = req.body;
+    const rider = await prisma.user.update({
+      where: { id: req.params.id, role: 'RIDER' },
+      data: { zoneId },
+      include: { zone: true },
+    });
+    res.json({ success: true, rider });
+  } catch (err) {
+    next(err);
+  }
+};
+
+// ─────────────────────────────────────────────
+// Admin: set a rider's COD limit (mirrors finance.controller's vendor version)
+// ─────────────────────────────────────────────
+exports.setCodLimit = async (req, res, next) => {
+  try {
+    const { codLimit } = req.body;
+    let value = null;
+    if (codLimit !== null && codLimit !== undefined && codLimit !== '') {
+      value = Number(codLimit);
+      if (Number.isNaN(value) || value < 0) {
+        return res.status(400).json({ success: false, message: 'codLimit must be >= 0 (or null for unlimited)' });
+      }
+    }
+
+    const rider = await prisma.user.findFirst({ where: { id: req.params.id, role: 'RIDER' } });
+    if (!rider) {
+      return res.status(404).json({ success: false, message: 'Rider not found' });
+    }
+
+    const updated = await prisma.user.update({
+      where: { id: rider.id },
+      data: { codLimit: value },
+      select: { id: true, name: true, codLimit: true, codLiability: true },
+    });
+    res.json({ success: true, rider: updated });
+  } catch (err) {
+    next(err);
+  }
+};
+
+// ─────────────────────────────────────────────
+// Admin: freeze/unfreeze a rider (toggle, or set via body.isFrozen)
+// ─────────────────────────────────────────────
+exports.toggleFreeze = async (req, res, next) => {
+  try {
+    const rider = await prisma.user.findFirst({ where: { id: req.params.id, role: 'RIDER' } });
+    if (!rider) {
+      return res.status(404).json({ success: false, message: 'Rider not found' });
+    }
+
+    const isFrozen = typeof req.body.isFrozen === 'boolean' ? req.body.isFrozen : !rider.isFrozen;
+    const updated = await prisma.user.update({
+      where: { id: rider.id },
+      data: { isFrozen },
+      select: { id: true, name: true, isFrozen: true },
+    });
+    res.json({ success: true, rider: updated });
+  } catch (err) {
+    next(err);
+  }
+};
+
+// ─────────────────────────────────────────────
+// Rider: update my own online/offline status
+// ─────────────────────────────────────────────
+exports.toggleOnline = async (req, res, next) => {
+  try {
+    const isOnline = typeof req.body.isOnline === 'boolean' ? req.body.isOnline : !req.user.isOnline;
+    const rider = await prisma.user.update({
+      where: { id: req.user.id },
+      data: { isOnline },
+      select: { id: true, isOnline: true },
+    });
+    res.json({ success: true, rider });
+  } catch (err) {
+    next(err);
+  }
+};
+
+// ─────────────────────────────────────────────
+// Rider: dashboard stats (mirrors vendor.controller.dashboard)
+// ─────────────────────────────────────────────
+exports.dashboard = async (req, res, next) => {
+  try {
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+
+    const [todayOrders, pendingOrders, completedOrders, totalAssigned] = await Promise.all([
+      prisma.order.count({
+        where: { riderId: req.user.id, createdAt: { gte: today } },
+      }),
+      prisma.order.count({
+        where: { riderId: req.user.id, status: { in: ['ASSIGNED', 'OUT_FOR_DELIVERY'] } },
+      }),
+      prisma.order.count({
+        where: { riderId: req.user.id, status: 'DELIVERED' },
+      }),
+      prisma.order.count({ where: { riderId: req.user.id } }),
+    ]);
+
+    res.json({
+      success: true,
+      stats: { todayOrders, pendingOrders, completedOrders, totalAssigned },
+    });
+  } catch (err) {
+    next(err);
+  }
+};

@@ -14,9 +14,11 @@ const authRoutes = require('./routes/auth.routes');
 const productRoutes = require('./routes/product.routes');
 const orderRoutes = require('./routes/order.routes');
 const vendorRoutes = require('./routes/vendor.routes');
+const riderRoutes = require('./routes/rider.routes');
 const subscriptionRoutes = require('./routes/subscription.routes');
 const adminRoutes = require('./routes/admin.routes');
 const financeRoutes = require('./routes/finance.routes');
+const kycRoutes = require('./routes/kyc.routes');
 
 const app = express();
 
@@ -28,7 +30,8 @@ app.use(
     credentials: true,
   })
 );
-app.use(express.json({ limit: '10mb' }));
+// 15mb: KYC submission sends up to 3 base64-encoded images (see auth.controller.submitKyc)
+app.use(express.json({ limit: '15mb' }));
 app.use(express.urlencoded({ extended: true }));
 app.use(morgan('dev'));
 
@@ -63,8 +66,10 @@ app.use('/api/auth', authRoutes);
 app.use('/api/products', productRoutes);
 app.use('/api/orders', orderRoutes);
 app.use('/api/vendors', vendorRoutes);
+app.use('/api/riders', riderRoutes);
 app.use('/api/subscriptions', subscriptionRoutes);
 app.use('/api/admin/finance', financeRoutes);
+app.use('/api/admin/kyc', kycRoutes);
 app.use('/api/admin', adminRoutes);
 
 // ── 404 handler ──

@@ -7,6 +7,9 @@ const prisma = require('../config/prisma');
 const { generateOrderNumber } = require('../utils/generators');
 const { sendOrderConfirmationSms, sendOrderAssignedSms } = require('../services/sms.service');
 const { createDeliveryLedgerEntries } = require('../services/ledger.service');
+const {
+  needsRider, tryAssignVendor, tryAssignRider, reassignIfExpired,
+} = require('../services/assignment.service');
 
 // ─────────────────────────────────────────────
 // Place an order (guest or authenticated)
@@ -20,6 +23,7 @@ exports.placeOrder = async (req, res, next) => {
       deliveryDate,
       deliveryTimeSlot,
       paymentMethod,
+      fulfillmentType = 'DELIVERY',
       // guest fields
       guestName, guestPhone,
     } = req.body;
@@ -30,6 +34,9 @@ exports.placeOrder = async (req, res, next) => {
     }
     if (!zoneId || !deliveryAddress || !paymentMethod) {
       return res.status(400).json({ success: false, message: 'Zone, address, and payment method required' });
+    }
+    if (!['SELF_PICKUP', 'DELIVERY'].includes(fulfillmentType)) {
+      return res.status(400).json({ success: false, message: 'fulfillmentType must be SELF_PICKUP or DELIVERY' });
     }
 
     const isGuest = !req.user;
@@ -87,6 +94,7 @@ exports.placeOrder = async (req, res, next) => {
         deliveryDate: deliveryDate ? new Date(deliveryDate) : null,
         deliveryTimeSlot,
         paymentMethod,
+        fulfillmentType,
         subtotal,
         total,
         status: 'PENDING',
@@ -95,6 +103,10 @@ exports.placeOrder = async (req, res, next) => {
       },
       include: { items: { include: { product: true } }, zone: true },
     });
+
+    // ─── Offer to the first eligible vendor in the zone ──
+    // Self-pickup orders still need a vendor to prepare/hold the order.
+    await tryAssignVendor(order.id);
 
     // ─── Send confirmation SMS ──
     const phone = isGuest ? guestPhone : req.user.phone;
@@ -121,6 +133,9 @@ exports.placeOrder = async (req, res, next) => {
 exports.trackOrder = async (req, res, next) => {
   try {
     const { orderNumber } = req.params;
+
+    const existing = await prisma.order.findUnique({ where: { orderNumber }, select: { id: true } });
+    if (existing) await reassignIfExpired(existing.id);
 
     const order = await prisma.order.findUnique({
       where: { orderNumber },
@@ -167,15 +182,23 @@ exports.myOrders = async (req, res, next) => {
 };
 
 // ─────────────────────────────────────────────
-// Vendor: get orders assigned to me OR available in my zone
+// Vendor: get orders assigned to me OR currently offered to me
 // ─────────────────────────────────────────────
 exports.vendorOrders = async (req, res, next) => {
   try {
+    // Sweep: expire any offers sitting with me before listing, so a dead
+    // offer doesn't linger in my queue and a fresh one gets a chance.
+    const pending = await prisma.order.findMany({
+      where: { offeredVendorId: req.user.id, vendorId: null },
+      select: { id: true },
+    });
+    for (const o of pending) await reassignIfExpired(o.id);
+
     const orders = await prisma.order.findMany({
       where: {
         OR: [
           { vendorId: req.user.id },
-          { vendorId: null, zoneId: req.user.zoneId, status: { in: ['PENDING', 'CONFIRMED'] } },
+          { offeredVendorId: req.user.id, vendorId: null },
         ],
       },
       orderBy: { createdAt: 'desc' },
@@ -188,19 +211,20 @@ exports.vendorOrders = async (req, res, next) => {
 };
 
 // ─────────────────────────────────────────────
-// Vendor: accept an order (assign to self)
+// Vendor: accept an order currently offered to me
 // ─────────────────────────────────────────────
 exports.acceptOrder = async (req, res, next) => {
   try {
+    await reassignIfExpired(req.params.id);
     const order = await prisma.order.findUnique({ where: { id: req.params.id } });
     if (!order) {
       return res.status(404).json({ success: false, message: 'Order not found' });
     }
-    if (order.zoneId !== req.user.zoneId) {
-      return res.status(403).json({ success: false, message: 'Order is not in your zone' });
-    }
     if (order.vendorId) {
       return res.status(409).json({ success: false, message: 'Order already assigned' });
+    }
+    if (order.offeredVendorId !== req.user.id) {
+      return res.status(403).json({ success: false, message: 'This order is not currently offered to you' });
     }
     if (req.user.isFrozen) {
       return res.status(403).json({ success: false, message: 'Account frozen — contact FlowX admin' });
@@ -220,17 +244,137 @@ exports.acceptOrder = async (req, res, next) => {
       where: { id: order.id },
       data: {
         vendorId: req.user.id,
+        offeredVendorId: null,
+        vendorAcceptDeadline: null,
         assignedAt: new Date(),
         status: 'ASSIGNED',
         statusHistory: { create: { status: 'ASSIGNED', changedBy: req.user.id, notes: 'Vendor accepted' } },
       },
     });
 
+    // Delivery orders (except bulky items like the 1000L tank) need a rider next
+    const withItems = await prisma.order.findUnique({
+      where: { id: order.id },
+      include: { items: { include: { product: true } } },
+    });
+    if (needsRider(withItems)) {
+      await tryAssignRider(order.id);
+    }
+
     // Notify customer
     const customerPhone = order.guestPhone || (await prisma.user.findUnique({ where: { id: order.customerId } }))?.phone;
     if (customerPhone) sendOrderAssignedSms(customerPhone, order.orderNumber, req.user.name);
 
+    const finalOrder = await prisma.order.findUnique({ where: { id: order.id } });
+    res.json({ success: true, order: finalOrder });
+  } catch (err) {
+    next(err);
+  }
+};
+
+// ─────────────────────────────────────────────
+// Vendor: explicitly decline an order offered to me (immediate reassignment,
+// doesn't wait for the deadline)
+// ─────────────────────────────────────────────
+exports.rejectOrder = async (req, res, next) => {
+  try {
+    const order = await prisma.order.findUnique({ where: { id: req.params.id } });
+    if (!order) {
+      return res.status(404).json({ success: false, message: 'Order not found' });
+    }
+    if (order.offeredVendorId !== req.user.id) {
+      return res.status(403).json({ success: false, message: 'This order is not currently offered to you' });
+    }
+
+    await tryAssignVendor(order.id, req.user.id);
+    res.json({ success: true, message: 'Order declined and passed to the next vendor' });
+  } catch (err) {
+    next(err);
+  }
+};
+
+// ─────────────────────────────────────────────
+// Rider: get orders currently offered to me OR assigned to me
+// ─────────────────────────────────────────────
+exports.riderOrders = async (req, res, next) => {
+  try {
+    const pending = await prisma.order.findMany({
+      where: { riderId: req.user.id, riderAcceptDeadline: { not: null } },
+      select: { id: true },
+    });
+    for (const o of pending) await reassignIfExpired(o.id);
+
+    const orders = await prisma.order.findMany({
+      where: { riderId: req.user.id },
+      orderBy: { createdAt: 'desc' },
+      include: { items: { include: { product: true } }, zone: true, vendor: { select: { name: true, phone: true } } },
+    });
+    res.json({ success: true, orders });
+  } catch (err) {
+    next(err);
+  }
+};
+
+// ─────────────────────────────────────────────
+// Rider: accept a delivery offered to me
+// ─────────────────────────────────────────────
+exports.riderAcceptOrder = async (req, res, next) => {
+  try {
+    await reassignIfExpired(req.params.id);
+    const order = await prisma.order.findUnique({ where: { id: req.params.id } });
+    if (!order) {
+      return res.status(404).json({ success: false, message: 'Order not found' });
+    }
+    if (order.riderId !== req.user.id) {
+      return res.status(403).json({ success: false, message: 'This delivery is not currently offered to you' });
+    }
+    if (order.riderAcceptDeadline === null) {
+      return res.status(409).json({ success: false, message: 'Already accepted' });
+    }
+    if (req.user.isFrozen) {
+      return res.status(403).json({ success: false, message: 'Account frozen — contact FlowX admin' });
+    }
+    if (
+      order.paymentMethod === 'COD' &&
+      req.user.codLimit != null &&
+      Number(req.user.codLiability) + Number(order.total) > Number(req.user.codLimit)
+    ) {
+      return res.status(403).json({
+        success: false,
+        message: 'COD limit exceeded — settlement required before accepting more COD deliveries.',
+      });
+    }
+
+    // Accepted = deadline cleared, riderId stays set
+    const updated = await prisma.order.update({
+      where: { id: order.id },
+      data: {
+        riderAcceptDeadline: null,
+        statusHistory: { create: { status: order.status, changedBy: req.user.id, notes: 'Rider accepted' } },
+      },
+    });
+
     res.json({ success: true, order: updated });
+  } catch (err) {
+    next(err);
+  }
+};
+
+// ─────────────────────────────────────────────
+// Rider: explicitly decline a delivery offered to me
+// ─────────────────────────────────────────────
+exports.riderRejectOrder = async (req, res, next) => {
+  try {
+    const order = await prisma.order.findUnique({ where: { id: req.params.id } });
+    if (!order) {
+      return res.status(404).json({ success: false, message: 'Order not found' });
+    }
+    if (order.riderId !== req.user.id || order.riderAcceptDeadline === null) {
+      return res.status(403).json({ success: false, message: 'This delivery is not currently offered to you' });
+    }
+
+    await tryAssignRider(order.id, req.user.id);
+    res.json({ success: true, message: 'Delivery declined and passed to the next rider' });
   } catch (err) {
     next(err);
   }
@@ -253,11 +397,14 @@ exports.updateStatus = async (req, res, next) => {
       return res.status(404).json({ success: false, message: 'Order not found' });
     }
 
-    // Vendor can only update their own orders. Admin can update any.
+    // Vendor/rider can only update their own orders. Admin can update any.
     if (req.user.role === 'VENDOR' && order.vendorId !== req.user.id) {
       return res.status(403).json({ success: false, message: 'Not your order' });
     }
-    if (req.user.role === 'VENDOR' && req.user.isFrozen) {
+    if (req.user.role === 'RIDER' && order.riderId !== req.user.id) {
+      return res.status(403).json({ success: false, message: 'Not your delivery' });
+    }
+    if ((req.user.role === 'VENDOR' || req.user.role === 'RIDER') && req.user.isFrozen) {
       return res.status(403).json({ success: false, message: 'Account frozen — contact FlowX admin' });
     }
 
@@ -303,6 +450,7 @@ exports.adminListOrders = async (req, res, next) => {
         items: { include: { product: true } },
         zone: true,
         vendor: { select: { id: true, name: true, phone: true } },
+        rider: { select: { id: true, name: true, phone: true } },
         customer: { select: { id: true, name: true, phone: true } },
       },
     });
@@ -339,15 +487,23 @@ exports.assignVendor = async (req, res, next) => {
       where: { id: req.params.id },
       data: {
         vendorId,
+        offeredVendorId: null,
+        vendorAcceptDeadline: null,
         assignedAt: new Date(),
         status: 'ASSIGNED',
         statusHistory: {
           create: { status: 'ASSIGNED', changedBy: req.user.id, notes: `Manually assigned to ${vendor.name}` },
         },
       },
+      include: { items: { include: { product: true } } },
     });
 
-    res.json({ success: true, order });
+    if (needsRider(order)) {
+      await tryAssignRider(order.id);
+    }
+
+    const finalOrder = await prisma.order.findUnique({ where: { id: order.id } });
+    res.json({ success: true, order: finalOrder });
   } catch (err) {
     next(err);
   }

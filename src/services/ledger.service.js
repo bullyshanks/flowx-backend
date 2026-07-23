@@ -8,9 +8,20 @@ const prisma = require('../config/prisma');
 const round2 = (n) => Math.round(n * 100) / 100;
 
 /**
- * Create ledger entries for a delivered order.
+ * Create ledger entries for a delivered order — vendor side (product value +
+ * commission) and, for DELIVERY orders with a rider, the rider's earning.
  * Idempotent — skips if entries already exist for the order.
  * Runs everything inside a transaction.
+ *
+ * COD cash-holder split: whoever physically collected the cash owes FlowX
+ * for it, not whoever fulfilled the order.
+ *   - SELF_PICKUP + COD: vendor collects from the customer directly → vendor
+ *     owes FlowX the commission slice of that cash (as in v1).
+ *   - DELIVERY + COD: the RIDER collects the cash, not the vendor → the rider
+ *     owes FlowX the full amount collected (product value; they keep nothing
+ *     upfront, their earning is paid out separately at settlement, same as
+ *     how vendor commission always worked). Vendor's own codLiability is
+ *     untouched since they never held any cash for this order.
  */
 async function createDeliveryLedgerEntries(orderId) {
   return prisma.$transaction(async (tx) => {
@@ -20,8 +31,9 @@ async function createDeliveryLedgerEntries(orderId) {
     });
     if (!order || !order.vendorId) return null;
 
-    const existing = await tx.ledgerEntry.findFirst({ where: { orderId: order.id } });
-    if (existing) return null;
+    const existingVendor = await tx.ledgerEntry.findFirst({ where: { orderId: order.id } });
+    const existingRider = await tx.riderLedgerEntry.findFirst({ where: { orderId: order.id } });
+    if (existingVendor || existingRider) return null;
 
     const settings = await tx.commissionSettings.findFirst();
     const defaultPct = settings ? Number(settings.defaultCommissionPct) : 20;
@@ -46,40 +58,53 @@ async function createDeliveryLedgerEntries(orderId) {
     commission = round2(commission);
     riderEarning = round2(riderEarning);
 
-    const entries = [
-      {
-        vendorId: order.vendorId,
-        orderId: order.id,
-        type: 'PRODUCT_VALUE',
-        amount: productValue,
-        description: `Product value for order ${order.orderNumber}`,
-      },
-      {
-        vendorId: order.vendorId,
-        orderId: order.id,
-        type: 'COMMISSION_DEDUCTED',
-        amount: -commission,
-        description: `Commission on order ${order.orderNumber}`,
-      },
-    ];
-    if (riderEarning > 0) {
-      entries.push({
-        vendorId: order.vendorId,
-        orderId: order.id,
-        type: 'RIDER_EARNING',
-        amount: riderEarning,
-        description: `Rider earning for order ${order.orderNumber}`,
+    // ── Vendor ledger: product value credit + commission debit only ──
+    await tx.ledgerEntry.createMany({
+      data: [
+        {
+          vendorId: order.vendorId,
+          orderId: order.id,
+          type: 'PRODUCT_VALUE',
+          amount: productValue,
+          description: `Product value for order ${order.orderNumber}`,
+        },
+        {
+          vendorId: order.vendorId,
+          orderId: order.id,
+          type: 'COMMISSION_DEDUCTED',
+          amount: -commission,
+          description: `Commission on order ${order.orderNumber}`,
+        },
+      ],
+    });
+
+    // ── Rider ledger: earning credit, only for DELIVERY orders with a rider ──
+    const hasRider = order.fulfillmentType === 'DELIVERY' && order.riderId && riderEarning > 0;
+    if (hasRider) {
+      await tx.riderLedgerEntry.create({
+        data: {
+          riderId: order.riderId,
+          orderId: order.id,
+          type: 'RIDER_EARNING',
+          amount: riderEarning,
+          description: `Rider earning for order ${order.orderNumber}`,
+        },
       });
     }
 
-    await tx.ledgerEntry.createMany({ data: entries });
-
-    // COD: vendor collected the cash and owes FlowX the commission
+    // ── COD cash-holder liability ──
     if (order.paymentMethod === 'COD') {
-      await tx.user.update({
-        where: { id: order.vendorId },
-        data: { codLiability: { increment: commission } },
-      });
+      if (order.fulfillmentType === 'SELF_PICKUP') {
+        await tx.user.update({
+          where: { id: order.vendorId },
+          data: { codLiability: { increment: commission } },
+        });
+      } else if (order.riderId) {
+        await tx.user.update({
+          where: { id: order.riderId },
+          data: { codLiability: { increment: productValue } },
+        });
+      }
     }
 
     return { productValue, commission, riderEarning };
@@ -114,4 +139,31 @@ async function getVendorWalletSummary(vendorId) {
   };
 }
 
-module.exports = { createDeliveryLedgerEntries, getVendorWalletSummary, round2 };
+/**
+ * Wallet summary for a rider: totals per entry type + net balance.
+ * Mirrors getVendorWalletSummary but reads RiderLedgerEntry.
+ */
+async function getRiderWalletSummary(riderId) {
+  const grouped = await prisma.riderLedgerEntry.groupBy({
+    by: ['type'],
+    where: { riderId },
+    _sum: { amount: true },
+  });
+
+  const sumOf = (type) => {
+    const row = grouped.find((g) => g.type === type);
+    return row ? Number(row._sum.amount) : 0;
+  };
+
+  const totalEarning = sumOf('RIDER_EARNING');
+  const netPayable = round2(grouped.reduce((acc, g) => acc + Number(g._sum.amount), 0));
+
+  return {
+    totalEarning: round2(totalEarning),
+    netPayable,
+  };
+}
+
+module.exports = {
+  createDeliveryLedgerEntries, getVendorWalletSummary, getRiderWalletSummary, round2,
+};
