@@ -20,4 +20,9 @@ router.post('/settlements/generate', ctrl.generateSettlements);
 router.post('/settlements/:id/approve', ctrl.approveSettlement);
 router.post('/settlements/:id/pay', ctrl.paySettlement);
 
+router.get('/riders/settlements/pending', ctrl.pendingRiderSettlements);
+router.post('/riders/settlements/generate', ctrl.generateRiderSettlements);
+router.post('/riders/settlements/:id/approve', ctrl.approveRiderSettlement);
+router.post('/riders/settlements/:id/pay', ctrl.payRiderSettlement);
+
 module.exports = router;

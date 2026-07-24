@@ -89,6 +89,66 @@ async function unsettledEntriesByVendor(periodStart, periodEnd) {
   return byVendor;
 }
 
+/**
+ * Sum a rider's ledger entries for a settlement period. Riders don't pay
+ * commission — their earning (flat riderEarningPerUnit per delivery) is
+ * owed regardless of who ends up holding the COD cash, so unlike vendors
+ * there's no COD carve-out here. Cash a rider collected on a COD delivery
+ * is tracked separately via codLiability (incremented directly at delivery,
+ * not through a ledger entry) and isn't netted against this payout — there's
+ * no ledger line to attribute it to a period from, so clearing it here would
+ * be a guess, not a reconciliation. It stays a separate concern for now.
+ */
+function computeRiderPeriodTotals(entries) {
+  let totalEarning = 0;
+  let netPayable = 0;
+
+  for (const e of entries) {
+    const amount = Number(e.amount);
+    if (e.type === 'RIDER_EARNING') {
+      totalEarning += amount;
+      netPayable += amount;
+    } else {
+      // REFUND / ADJUSTMENT — signed, applied directly
+      netPayable += amount;
+    }
+  }
+
+  return {
+    totalEarning: round2(totalEarning),
+    netPayable: round2(netPayable),
+  };
+}
+
+// RiderLedgerEntry rows for a period, grouped by rider (settlement payouts excluded)
+async function unsettledEntriesByRider(periodStart, periodEnd) {
+  const entries = await prisma.riderLedgerEntry.findMany({
+    where: {
+      createdAt: { gte: periodStart, lt: periodEnd },
+      type: { not: 'SETTLEMENT_PAYOUT' },
+    },
+  });
+
+  const byRider = new Map();
+  for (const e of entries) {
+    if (!byRider.has(e.riderId)) byRider.set(e.riderId, []);
+    byRider.get(e.riderId).push(e);
+  }
+
+  // Drop riders already settled for an overlapping period
+  const settled = await prisma.riderSettlement.findMany({
+    where: {
+      riderId: { in: [...byRider.keys()] },
+      periodStart: { lt: periodEnd },
+      periodEnd: { gt: periodStart },
+    },
+    select: { riderId: true },
+  });
+  for (const s of settled) byRider.delete(s.riderId);
+
+  return byRider;
+}
+
 // ─────────────────────────────────────────────
 // Commission settings
 // ─────────────────────────────────────────────
@@ -448,6 +508,133 @@ exports.paySettlement = async (req, res, next) => {
       });
 
       return tx.settlement.update({
+        where: { id: settlement.id },
+        data: { status: 'PAID', paidAt: new Date(), paymentMethod, paymentReference: paymentReference || null },
+      });
+    });
+
+    res.json({ success: true, settlement: paid });
+  } catch (err) {
+    next(err);
+  }
+};
+
+// ─────────────────────────────────────────────
+// GET /riders/settlements/pending — unsettled balances, current week
+// ─────────────────────────────────────────────
+exports.pendingRiderSettlements = async (req, res, next) => {
+  try {
+    const { start, end } = currentWeekRange();
+    const byRider = await unsettledEntriesByRider(start, end);
+
+    const riders = await prisma.user.findMany({
+      where: { id: { in: [...byRider.keys()] } },
+      select: { id: true, name: true, phone: true, codLiability: true, zone: { select: { name: true } } },
+    });
+
+    const unsettled = riders.map((r) => ({
+      rider: r,
+      period: { start, end },
+      ...computeRiderPeriodTotals(byRider.get(r.id)),
+    })).filter((u) => u.totalEarning !== 0 || u.netPayable !== 0);
+
+    // Existing settlements awaiting approval / payment
+    const awaiting = await prisma.riderSettlement.findMany({
+      where: { status: { in: ['PENDING', 'APPROVED'] } },
+      orderBy: { createdAt: 'desc' },
+      include: { rider: { select: { id: true, name: true, phone: true } } },
+    });
+
+    res.json({ success: true, unsettled, awaiting });
+  } catch (err) {
+    next(err);
+  }
+};
+
+// ─────────────────────────────────────────────
+// POST /riders/settlements/generate — { periodStart?, periodEnd? }
+// ─────────────────────────────────────────────
+exports.generateRiderSettlements = async (req, res, next) => {
+  try {
+    const week = currentWeekRange();
+    const periodStart = req.body.periodStart ? new Date(req.body.periodStart) : week.start;
+    const periodEnd = req.body.periodEnd ? new Date(req.body.periodEnd) : week.end;
+    if (Number.isNaN(periodStart.getTime()) || Number.isNaN(periodEnd.getTime()) || periodStart >= periodEnd) {
+      return res.status(400).json({ success: false, message: 'Invalid period' });
+    }
+
+    const byRider = await unsettledEntriesByRider(periodStart, periodEnd);
+
+    const created = [];
+    for (const [riderId, entries] of byRider) {
+      const totals = computeRiderPeriodTotals(entries);
+      if (totals.totalEarning === 0 && totals.netPayable === 0) continue;
+
+      const settlement = await prisma.riderSettlement.create({
+        data: { riderId, periodStart, periodEnd, ...totals },
+        include: { rider: { select: { id: true, name: true, phone: true } } },
+      });
+      created.push(settlement);
+    }
+
+    res.status(201).json({ success: true, message: `${created.length} settlement(s) generated`, settlements: created });
+  } catch (err) {
+    next(err);
+  }
+};
+
+// ─────────────────────────────────────────────
+// POST /riders/settlements/:id/approve
+// ─────────────────────────────────────────────
+exports.approveRiderSettlement = async (req, res, next) => {
+  try {
+    const settlement = await prisma.riderSettlement.findUnique({ where: { id: req.params.id } });
+    if (!settlement) {
+      return res.status(404).json({ success: false, message: 'Settlement not found' });
+    }
+    if (settlement.status !== 'PENDING') {
+      return res.status(409).json({ success: false, message: `Settlement is already ${settlement.status}` });
+    }
+
+    const updated = await prisma.riderSettlement.update({
+      where: { id: settlement.id },
+      data: { status: 'APPROVED', approvedAt: new Date() },
+    });
+    res.json({ success: true, settlement: updated });
+  } catch (err) {
+    next(err);
+  }
+};
+
+// ─────────────────────────────────────────────
+// POST /riders/settlements/:id/pay — { paymentMethod, paymentReference }
+// ─────────────────────────────────────────────
+exports.payRiderSettlement = async (req, res, next) => {
+  try {
+    const { paymentMethod, paymentReference } = req.body;
+    if (!paymentMethod) {
+      return res.status(400).json({ success: false, message: 'paymentMethod required' });
+    }
+
+    const settlement = await prisma.riderSettlement.findUnique({ where: { id: req.params.id } });
+    if (!settlement) {
+      return res.status(404).json({ success: false, message: 'Settlement not found' });
+    }
+    if (settlement.status !== 'APPROVED') {
+      return res.status(409).json({ success: false, message: `Settlement must be APPROVED first (currently ${settlement.status})` });
+    }
+
+    const paid = await prisma.$transaction(async (tx) => {
+      await tx.riderLedgerEntry.create({
+        data: {
+          riderId: settlement.riderId,
+          type: 'SETTLEMENT_PAYOUT',
+          amount: -Number(settlement.netPayable),
+          description: `Settlement ${settlement.id} paid via ${paymentMethod}${paymentReference ? ` (${paymentReference})` : ''}`,
+        },
+      });
+
+      return tx.riderSettlement.update({
         where: { id: settlement.id },
         data: { status: 'PAID', paidAt: new Date(), paymentMethod, paymentReference: paymentReference || null },
       });
