@@ -23,7 +23,7 @@ const requireAuth = async (req, res, next) => {
       select: {
         id: true, name: true, phone: true, role: true, vendorStatus: true, zoneId: true, isVerified: true,
         codLimit: true, codLiability: true, isFrozen: true,
-        kycStatus: true, isOnline: true, isOpen: true, stockStatus: true,
+        kycStatus: true, rejectedReason: true, isOnline: true, isOpen: true, stockStatus: true,
       },
     });
 
@@ -68,7 +68,9 @@ const requireApprovedVendor = (req, res, next) => {
   if (req.user.kycStatus !== 'APPROVED') {
     return res.status(403).json({
       success: false,
-      message: `KYC status: ${req.user.kycStatus}. Awaiting verification before you can go live.`,
+      message: req.user.kycStatus === 'REJECTED'
+        ? `KYC rejected${req.user.rejectedReason ? `: ${req.user.rejectedReason}` : ''}. Please resubmit your documents.`
+        : `KYC status: ${req.user.kycStatus}. Awaiting verification before you can go live.`,
     });
   }
   next();
@@ -91,7 +93,9 @@ const requireApprovedRider = (req, res, next) => {
   if (req.user.kycStatus !== 'APPROVED') {
     return res.status(403).json({
       success: false,
-      message: `KYC status: ${req.user.kycStatus}. Awaiting verification before you can go live.`,
+      message: req.user.kycStatus === 'REJECTED'
+        ? `KYC rejected${req.user.rejectedReason ? `: ${req.user.rejectedReason}` : ''}. Please resubmit your documents.`
+        : `KYC status: ${req.user.kycStatus}. Awaiting verification before you can go live.`,
     });
   }
   next();
