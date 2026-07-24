@@ -91,6 +91,13 @@ enum SettlementStatus {
   PAID
 }
 
+enum RefundStatus {
+  PENDING
+  APPROVED
+  PAID
+  REJECTED
+}
+
 // ─── MODELS ─────────────────────────────────────────────────
 
 model User {
@@ -143,6 +150,7 @@ model User {
   riderLedgerEntries RiderLedgerEntry[]
   riderSettlements   RiderSettlement[]
   vendorProducts     VendorProduct[]
+  refunds            Refund[]
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -274,6 +282,7 @@ model Order {
   statusHistory      OrderStatusLog[]
   ledgerEntries      LedgerEntry[]
   riderLedgerEntries RiderLedgerEntry[]
+  refunds            Refund[]
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -388,6 +397,44 @@ model Settlement {
   createdAt         DateTime         @default(now())
 
   @@index([vendorId])
+  @@index([status])
+}
+
+// Admin-initiated refunds (see order.controller.getOrder / finance.controller
+// refund endpoints). No payment gateway exists — paying out is the same
+// manual method+reference pattern as Settlement. Clawback fields record
+// whether/how much was deducted from the vendor's or rider's ledger for this
+// order at approval time; this is a business judgment call made per-refund,
+// not automatic, since "customer changed mind" and "vendor sent a bad
+// product" have different fault allocation.
+model Refund {
+  id         String  @id @default(uuid())
+  orderId    String
+  order      Order   @relation(fields: [orderId], references: [id])
+  customerId String?
+  customer   User?   @relation(fields: [customerId], references: [id])
+
+  amount Decimal @db.Decimal(10, 2)
+  reason String
+
+  status RefundStatus @default(PENDING)
+
+  clawbackVendor       Boolean  @default(false)
+  clawbackRider        Boolean  @default(false)
+  vendorClawbackAmount Decimal? @db.Decimal(10, 2)
+  riderClawbackAmount  Decimal? @db.Decimal(10, 2)
+
+  paymentMethod    String?
+  paymentReference String?
+  rejectedReason   String?
+
+  approvedAt DateTime?
+  paidAt     DateTime?
+  createdAt  DateTime  @default(now())
+  updatedAt  DateTime  @updatedAt
+
+  @@index([orderId])
+  @@index([customerId])
   @@index([status])
 }
 

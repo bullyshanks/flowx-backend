@@ -668,3 +668,202 @@ exports.payRiderSettlement = async (req, res, next) => {
     next(err);
   }
 };
+
+// ─────────────────────────────────────────────
+// Refunds — admin-initiated. No payment gateway exists, so "paying" a
+// refund is the same manual method+reference record as Settlement pay.
+// Clawback (deducting the vendor's/rider's ledger for this order) is an
+// explicit choice at approval time, not automatic — whether the vendor,
+// the rider, or FlowX eats the cost is a business judgment call the admin
+// makes per-refund (customer changed their mind vs. vendor sent a bad
+// product are very different cases).
+// ─────────────────────────────────────────────
+
+// What a vendor/rider actually received for this order — the ceiling on
+// what can be clawed back from each of them.
+async function orderClawbackCeilings(orderId) {
+  const [vendorEntries, riderEntries] = await Promise.all([
+    prisma.ledgerEntry.findMany({ where: { orderId, type: 'PRODUCT_VALUE' } }),
+    prisma.riderLedgerEntry.findMany({ where: { orderId, type: 'RIDER_EARNING' } }),
+  ]);
+  return {
+    vendorCeiling: round2(vendorEntries.reduce((acc, e) => acc + Number(e.amount), 0)),
+    riderCeiling: round2(riderEntries.reduce((acc, e) => acc + Number(e.amount), 0)),
+  };
+}
+
+// ─────────────────────────────────────────────
+// GET /refunds — { status? }
+// ─────────────────────────────────────────────
+exports.listRefunds = async (req, res, next) => {
+  try {
+    const { status } = req.query;
+    const refunds = await prisma.refund.findMany({
+      where: status ? { status } : undefined,
+      orderBy: { createdAt: 'desc' },
+      include: {
+        order: { select: { orderNumber: true, total: true, status: true, vendorId: true, riderId: true } },
+        customer: { select: { id: true, name: true, phone: true } },
+      },
+    });
+    res.json({ success: true, refunds });
+  } catch (err) {
+    next(err);
+  }
+};
+
+// ─────────────────────────────────────────────
+// POST /refunds — { orderNumber, amount, reason }
+// ─────────────────────────────────────────────
+exports.createRefund = async (req, res, next) => {
+  try {
+    const { orderNumber, amount, reason } = req.body;
+    if (!orderNumber) {
+      return res.status(400).json({ success: false, message: 'orderNumber required' });
+    }
+    if (!reason || !String(reason).trim()) {
+      return res.status(400).json({ success: false, message: 'reason required' });
+    }
+
+    const order = await prisma.order.findUnique({ where: { orderNumber } });
+    if (!order) {
+      return res.status(404).json({ success: false, message: 'Order not found' });
+    }
+
+    const value = Number(amount);
+    if (Number.isNaN(value) || value <= 0) {
+      return res.status(400).json({ success: false, message: 'amount must be a number > 0' });
+    }
+    if (value > Number(order.total)) {
+      return res.status(400).json({ success: false, message: `amount cannot exceed the order total (${order.total})` });
+    }
+
+    const refund = await prisma.refund.create({
+      data: {
+        orderId: order.id,
+        customerId: order.customerId,
+        amount: value,
+        reason: String(reason).trim(),
+      },
+      include: { order: { select: { orderNumber: true, total: true } } },
+    });
+
+    res.status(201).json({ success: true, refund });
+  } catch (err) {
+    next(err);
+  }
+};
+
+// ─────────────────────────────────────────────
+// POST /refunds/:id/approve — { clawbackVendor?: boolean, clawbackRider?: boolean }
+// ─────────────────────────────────────────────
+exports.approveRefund = async (req, res, next) => {
+  try {
+    const refund = await prisma.refund.findUnique({ where: { id: req.params.id } });
+    if (!refund) {
+      return res.status(404).json({ success: false, message: 'Refund not found' });
+    }
+    if (refund.status !== 'PENDING') {
+      return res.status(409).json({ success: false, message: `Refund is already ${refund.status}` });
+    }
+
+    const clawbackVendor = req.body.clawbackVendor === true;
+    const clawbackRider = req.body.clawbackRider === true;
+    const { vendorCeiling, riderCeiling } = await orderClawbackCeilings(refund.orderId);
+
+    const updated = await prisma.refund.update({
+      where: { id: refund.id },
+      data: {
+        status: 'APPROVED',
+        approvedAt: new Date(),
+        clawbackVendor,
+        clawbackRider,
+        vendorClawbackAmount: clawbackVendor ? Math.min(vendorCeiling, Number(refund.amount)) : null,
+        riderClawbackAmount: clawbackRider ? Math.min(riderCeiling, Number(refund.amount)) : null,
+      },
+    });
+
+    res.json({ success: true, refund: updated });
+  } catch (err) {
+    next(err);
+  }
+};
+
+// ─────────────────────────────────────────────
+// POST /refunds/:id/reject — { reason }
+// ─────────────────────────────────────────────
+exports.rejectRefund = async (req, res, next) => {
+  try {
+    const { reason } = req.body;
+    const refund = await prisma.refund.findUnique({ where: { id: req.params.id } });
+    if (!refund) {
+      return res.status(404).json({ success: false, message: 'Refund not found' });
+    }
+    if (refund.status !== 'PENDING') {
+      return res.status(409).json({ success: false, message: `Refund is already ${refund.status}` });
+    }
+
+    const updated = await prisma.refund.update({
+      where: { id: refund.id },
+      data: { status: 'REJECTED', rejectedReason: reason ? String(reason).trim() : null },
+    });
+
+    res.json({ success: true, refund: updated });
+  } catch (err) {
+    next(err);
+  }
+};
+
+// ─────────────────────────────────────────────
+// POST /refunds/:id/pay — { paymentMethod, paymentReference }
+// ─────────────────────────────────────────────
+exports.payRefund = async (req, res, next) => {
+  try {
+    const { paymentMethod, paymentReference } = req.body;
+    if (!paymentMethod) {
+      return res.status(400).json({ success: false, message: 'paymentMethod required' });
+    }
+
+    const refund = await prisma.refund.findUnique({ where: { id: req.params.id }, include: { order: true } });
+    if (!refund) {
+      return res.status(404).json({ success: false, message: 'Refund not found' });
+    }
+    if (refund.status !== 'APPROVED') {
+      return res.status(409).json({ success: false, message: `Refund must be APPROVED first (currently ${refund.status})` });
+    }
+
+    const paid = await prisma.$transaction(async (tx) => {
+      if (refund.clawbackVendor && refund.order.vendorId && Number(refund.vendorClawbackAmount) > 0) {
+        await tx.ledgerEntry.create({
+          data: {
+            vendorId: refund.order.vendorId,
+            orderId: refund.orderId,
+            type: 'REFUND',
+            amount: -Number(refund.vendorClawbackAmount),
+            description: `Refund ${refund.id} clawback on order ${refund.order.orderNumber}`,
+          },
+        });
+      }
+      if (refund.clawbackRider && refund.order.riderId && Number(refund.riderClawbackAmount) > 0) {
+        await tx.riderLedgerEntry.create({
+          data: {
+            riderId: refund.order.riderId,
+            orderId: refund.orderId,
+            type: 'REFUND',
+            amount: -Number(refund.riderClawbackAmount),
+            description: `Refund ${refund.id} clawback on order ${refund.order.orderNumber}`,
+          },
+        });
+      }
+
+      return tx.refund.update({
+        where: { id: refund.id },
+        data: { status: 'PAID', paidAt: new Date(), paymentMethod, paymentReference: paymentReference || null },
+      });
+    });
+
+    res.json({ success: true, refund: paid });
+  } catch (err) {
+    next(err);
+  }
+};
