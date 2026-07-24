@@ -32,8 +32,14 @@ exports.placeOrder = async (req, res, next) => {
     if (!items || !Array.isArray(items) || items.length === 0) {
       return res.status(400).json({ success: false, message: 'At least one item required' });
     }
+    if (!items.every((i) => Number.isInteger(i.quantity) && i.quantity > 0)) {
+      return res.status(400).json({ success: false, message: 'Each item requires a valid positive quantity' });
+    }
     if (!zoneId || !deliveryAddress || !paymentMethod) {
       return res.status(400).json({ success: false, message: 'Zone, address, and payment method required' });
+    }
+    if (!['COD', 'JAZZCASH', 'EASYPAISA', 'BANK_TRANSFER', 'CARD'].includes(paymentMethod)) {
+      return res.status(400).json({ success: false, message: 'Invalid payment method' });
     }
     if (!['SELF_PICKUP', 'DELIVERY'].includes(fulfillmentType)) {
       return res.status(400).json({ success: false, message: 'fulfillmentType must be SELF_PICKUP or DELIVERY' });
@@ -51,7 +57,7 @@ exports.placeOrder = async (req, res, next) => {
     }
 
     // ─── Fetch products & calculate total ──
-    const productIds = items.map((i) => i.productId);
+    const productIds = [...new Set(items.map((i) => i.productId))];
     const products = await prisma.product.findMany({
       where: { id: { in: productIds }, isActive: true },
     });
