@@ -19,9 +19,14 @@ function advance(date, frequency) {
 }
 
 // Create the order + advance nextDeliveryDate for one due subscription.
-// The advance happens in the same transaction as order creation, so a
-// subscription is never left pointing at a past date after this runs —
-// the next scheduler tick won't see it again until its new date arrives.
+//
+// Claiming is a compare-and-swap: the UPDATE's WHERE clause requires
+// nextDeliveryDate to still equal the value we read. Postgres executes a
+// single UPDATE atomically, so if two callers (two instances, or two
+// overlapping ticks) race on the same subscription, only one of them can
+// ever match that WHERE and get count === 1 — the loser sees 0 and backs
+// off instead of creating a duplicate order. This is what actually closes
+// the window; running in one process was never what made it safe.
 async function processSubscription(sub) {
   const product = sub.product;
   if (!product.isActive) return null; // skip silently; admin can pause/cancel manually
@@ -29,7 +34,13 @@ async function processSubscription(sub) {
   const lineTotal = Number(product.price) * sub.quantity;
 
   const order = await prisma.$transaction(async (tx) => {
-    const created = await tx.order.create({
+    const claim = await tx.subscription.updateMany({
+      where: { id: sub.id, nextDeliveryDate: sub.nextDeliveryDate },
+      data: { nextDeliveryDate: advance(sub.nextDeliveryDate, sub.frequency) },
+    });
+    if (claim.count === 0) return null; // another instance/tick already claimed this cycle
+
+    return tx.order.create({
       data: {
         orderNumber: generateOrderNumber(),
         customerId: sub.customerId,
@@ -53,14 +64,9 @@ async function processSubscription(sub) {
         statusHistory: { create: [{ status: 'PENDING', notes: 'Auto-generated from subscription' }] },
       },
     });
-
-    await tx.subscription.update({
-      where: { id: sub.id },
-      data: { nextDeliveryDate: advance(sub.nextDeliveryDate, sub.frequency) },
-    });
-
-    return created;
   });
+
+  if (!order) return null;
 
   await tryAssignVendor(order.id);
 
