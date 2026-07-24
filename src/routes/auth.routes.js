@@ -24,5 +24,6 @@ router.post('/login', ctrl.login);
 
 // Current user
 router.get('/me', requireAuth, ctrl.me);
+router.patch('/me', requireAuth, ctrl.updateMe);
 
 module.exports = router;

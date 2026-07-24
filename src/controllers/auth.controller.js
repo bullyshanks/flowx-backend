@@ -358,3 +358,42 @@ exports.me = async (req, res, next) => {
     next(err);
   }
 };
+
+// ─────────────────────────────────────────────
+// Update current user's own profile (name, email, address — self-service
+// only; role-gated fields like vendorStatus go through admin endpoints)
+// ─────────────────────────────────────────────
+exports.updateMe = async (req, res, next) => {
+  try {
+    const { name, email, defaultAddress } = req.body;
+    const data = {};
+
+    if (name !== undefined) {
+      if (typeof name !== 'string' || !name.trim()) {
+        return res.status(400).json({ success: false, message: 'name must be a non-empty string' });
+      }
+      data.name = name.trim();
+    }
+    if (email !== undefined) {
+      data.email = email === null || email === '' ? null : String(email).trim();
+    }
+    if (defaultAddress !== undefined) {
+      data.defaultAddress = defaultAddress === null || defaultAddress === '' ? null : String(defaultAddress).trim();
+    }
+    if (Object.keys(data).length === 0) {
+      return res.status(400).json({ success: false, message: 'Nothing to update' });
+    }
+
+    const user = await prisma.user.update({
+      where: { id: req.user.id },
+      data,
+      select: { id: true, name: true, phone: true, email: true, role: true, defaultAddress: true },
+    });
+    res.json({ success: true, user });
+  } catch (err) {
+    if (err.code === 'P2002') {
+      return res.status(409).json({ success: false, message: 'That email is already in use' });
+    }
+    next(err);
+  }
+};
