@@ -8,7 +8,7 @@
 const prisma = require('../config/prisma');
 const { needsRider, tryAssignRider } = require('../services/assignment.service');
 const {
-  sendAccountFrozenSms, sendAccountUnfrozenSms,
+  sendAccountFrozenSms, sendAccountUnfrozenSms, sendRiderApprovedSms,
   sendAccountSuspendedSms, sendAccountReactivatedSms, sendAccountRejectedSms,
 } = require('../services/sms.service');
 
@@ -54,6 +54,8 @@ exports.approveRider = async (req, res, next) => {
         isVerified: true,
       },
     });
+
+    if (rider.phone) sendRiderApprovedSms(rider.phone);
 
     res.json({ success: true, message: 'Rider account approved', rider });
   } catch (err) {

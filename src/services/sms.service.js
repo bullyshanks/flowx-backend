@@ -70,6 +70,12 @@ const sendVendorApprovedSms = (phone) =>
     `FlowX: Your vendor account is approved! Login at flowx.pk/vendor to start receiving orders.`
   );
 
+const sendRiderApprovedSms = (phone) =>
+  sendSms(
+    phone,
+    `FlowX: Your rider account is approved! Login at flowx.pk/rider to start accepting deliveries.`
+  );
+
 const sendRefundPaidSms = (phone, orderNumber, amount) =>
   sendSms(
     phone,
@@ -143,6 +149,7 @@ module.exports = {
   sendOrderConfirmationSms,
   sendOrderAssignedSms,
   sendVendorApprovedSms,
+  sendRiderApprovedSms,
   sendRefundPaidSms,
   sendOrderOutForDeliverySms,
   sendOrderDeliveredSms,
