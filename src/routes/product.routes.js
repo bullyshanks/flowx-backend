@@ -13,4 +13,9 @@ router.post('/', requireAuth, requireRole('ADMIN'), ctrl.create);
 router.put('/:id', requireAuth, requireRole('ADMIN'), ctrl.update);
 router.delete('/:id', requireAuth, requireRole('ADMIN'), ctrl.remove);
 
+// Admin — zones
+router.get('/zones/admin/all', requireAuth, requireRole('ADMIN'), ctrl.adminListZones);
+router.post('/zones', requireAuth, requireRole('ADMIN'), ctrl.createZone);
+router.patch('/zones/:id', requireAuth, requireRole('ADMIN'), ctrl.updateZone);
+
 module.exports = router;

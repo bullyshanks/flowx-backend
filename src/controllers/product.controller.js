@@ -151,3 +151,72 @@ exports.remove = async (req, res, next) => {
     next(err);
   }
 };
+
+// ─────────────────────────────────────────────
+// Zones — admin CRUD. Zones are referenced by User.zoneId, Order.zoneId,
+// and Subscription.zoneId, so there's no delete: deactivating hides a zone
+// from the public /products/zones list (signup/checkout dropdowns) without
+// touching any existing vendor, rider, order, or subscription that
+// references it.
+// ─────────────────────────────────────────────
+exports.adminListZones = async (req, res, next) => {
+  try {
+    const zones = await prisma.zone.findMany({
+      orderBy: { name: 'asc' },
+      include: {
+        _count: { select: { users: true, orders: true, subscriptions: true } },
+      },
+    });
+    res.json({ success: true, zones });
+  } catch (err) {
+    next(err);
+  }
+};
+
+function pickAndValidateZoneFields(body, { partial }) {
+  const data = {};
+  const err = (message) => Object.assign(new Error(message), { status: 400 });
+
+  if (body.name !== undefined) {
+    if (typeof body.name !== 'string' || !body.name.trim()) throw err('name must be a non-empty string');
+    data.name = body.name.trim();
+  } else if (!partial) {
+    throw err('name is required');
+  }
+
+  if (body.city !== undefined) {
+    if (typeof body.city !== 'string' || !body.city.trim()) throw err('city must be a non-empty string');
+    data.city = body.city.trim();
+  }
+
+  if (body.isActive !== undefined) {
+    if (typeof body.isActive !== 'boolean') throw err('isActive must be a boolean');
+    data.isActive = body.isActive;
+  }
+
+  return data;
+}
+
+exports.createZone = async (req, res, next) => {
+  try {
+    const data = pickAndValidateZoneFields(req.body, { partial: false });
+    const zone = await prisma.zone.create({ data });
+    res.status(201).json({ success: true, zone });
+  } catch (err) {
+    next(err);
+  }
+};
+
+exports.updateZone = async (req, res, next) => {
+  try {
+    const data = pickAndValidateZoneFields(req.body, { partial: true });
+    if (Object.keys(data).length === 0) {
+      return res.status(400).json({ success: false, message: 'Nothing to update' });
+    }
+    const zone = await prisma.zone.update({ where: { id: req.params.id }, data });
+    res.json({ success: true, zone });
+  } catch (err) {
+    if (err.code === 'P2025') return res.status(404).json({ success: false, message: 'Zone not found' });
+    next(err);
+  }
+};
