@@ -7,7 +7,10 @@
 
 const prisma = require('../config/prisma');
 const { needsRider, tryAssignRider } = require('../services/assignment.service');
-const { sendAccountFrozenSms, sendAccountUnfrozenSms } = require('../services/sms.service');
+const {
+  sendAccountFrozenSms, sendAccountUnfrozenSms,
+  sendAccountSuspendedSms, sendAccountReactivatedSms,
+} = require('../services/sms.service');
 
 // ─────────────────────────────────────────────
 // Admin: list all riders (filterable)
@@ -101,6 +104,11 @@ exports.toggleSuspend = async (req, res, next) => {
         ? { vendorStatus: 'SUSPENDED', rejectedReason: reason || 'Account suspended' }
         : { vendorStatus: 'APPROVED', rejectedReason: null },
     });
+
+    if (rider.phone) {
+      if (suspending) sendAccountSuspendedSms(rider.phone, reason);
+      else sendAccountReactivatedSms(rider.phone);
+    }
 
     res.json({ success: true, message: suspending ? 'Rider suspended' : 'Rider reactivated', rider });
   } catch (err) {

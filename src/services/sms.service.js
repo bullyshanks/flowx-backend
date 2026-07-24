@@ -119,6 +119,18 @@ const sendAccountUnfrozenSms = (phone) =>
     `FlowX: Your account has been unfrozen. You can accept new orders again.`
   );
 
+const sendAccountSuspendedSms = (phone, reason) =>
+  sendSms(
+    phone,
+    `FlowX: Your account has been suspended${reason ? ` — ${reason}` : ''}. You will not be able to log in until this is resolved. Contact us on WhatsApp at +92 315 8374442.`
+  );
+
+const sendAccountReactivatedSms = (phone) =>
+  sendSms(
+    phone,
+    `FlowX: Your account has been reactivated. You can log in again.`
+  );
+
 module.exports = {
   sendSms,
   sendOtpSms,
@@ -133,4 +145,6 @@ module.exports = {
   sendOrderCancelledSms,
   sendAccountFrozenSms,
   sendAccountUnfrozenSms,
+  sendAccountSuspendedSms,
+  sendAccountReactivatedSms,
 };

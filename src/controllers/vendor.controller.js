@@ -4,7 +4,7 @@
 // ═══════════════════════════════════════════════════════════
 
 const prisma = require('../config/prisma');
-const { sendVendorApprovedSms } = require('../services/sms.service');
+const { sendVendorApprovedSms, sendAccountSuspendedSms, sendAccountReactivatedSms } = require('../services/sms.service');
 const { tryAssignVendor } = require('../services/assignment.service');
 
 // ─────────────────────────────────────────────
@@ -101,6 +101,11 @@ exports.toggleSuspend = async (req, res, next) => {
         ? { vendorStatus: 'SUSPENDED', rejectedReason: reason || 'Account suspended' }
         : { vendorStatus: 'APPROVED', rejectedReason: null },
     });
+
+    if (vendor.phone) {
+      if (suspending) sendAccountSuspendedSms(vendor.phone, reason);
+      else sendAccountReactivatedSms(vendor.phone);
+    }
 
     res.json({ success: true, message: suspending ? 'Vendor suspended' : 'Vendor reactivated', vendor });
   } catch (err) {
