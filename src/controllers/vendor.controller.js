@@ -77,6 +77,37 @@ exports.rejectVendor = async (req, res, next) => {
 };
 
 // ─────────────────────────────────────────────
+// Admin: suspend/reactivate a vendor (toggle between APPROVED and SUSPENDED)
+// ─────────────────────────────────────────────
+exports.toggleSuspend = async (req, res, next) => {
+  try {
+    const existing = await prisma.user.findFirst({ where: { id: req.params.id, role: 'VENDOR' } });
+    if (!existing) {
+      return res.status(404).json({ success: false, message: 'Vendor not found' });
+    }
+    if (existing.vendorStatus !== 'APPROVED' && existing.vendorStatus !== 'SUSPENDED') {
+      return res.status(409).json({
+        success: false,
+        message: `Cannot suspend a vendor with status ${existing.vendorStatus}`,
+      });
+    }
+
+    const { reason } = req.body;
+    const suspending = existing.vendorStatus === 'APPROVED';
+    const vendor = await prisma.user.update({
+      where: { id: existing.id },
+      data: suspending
+        ? { vendorStatus: 'SUSPENDED', rejectedReason: reason || 'Account suspended' }
+        : { vendorStatus: 'APPROVED', rejectedReason: null },
+    });
+
+    res.json({ success: true, message: suspending ? 'Vendor suspended' : 'Vendor reactivated', vendor });
+  } catch (err) {
+    next(err);
+  }
+};
+
+// ─────────────────────────────────────────────
 // Admin: change vendor zone
 // ─────────────────────────────────────────────
 exports.changeVendorZone = async (req, res, next) => {

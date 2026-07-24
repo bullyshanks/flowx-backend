@@ -15,6 +15,7 @@ router.get('/wallet/settlements', requireAuth, requireApprovedVendor, walletCtrl
 router.get('/', requireAuth, requireRole('ADMIN'), ctrl.listVendors);
 router.post('/:id/approve', requireAuth, requireRole('ADMIN'), ctrl.approveVendor);
 router.post('/:id/reject', requireAuth, requireRole('ADMIN'), ctrl.rejectVendor);
+router.patch('/:id/suspend', requireAuth, requireRole('ADMIN'), ctrl.toggleSuspend);
 router.patch('/:id/zone', requireAuth, requireRole('ADMIN'), ctrl.changeVendorZone);
 
 module.exports = router;

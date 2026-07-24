@@ -76,6 +76,37 @@ exports.rejectRider = async (req, res, next) => {
 };
 
 // ─────────────────────────────────────────────
+// Admin: suspend/reactivate a rider (toggle between APPROVED and SUSPENDED)
+// ─────────────────────────────────────────────
+exports.toggleSuspend = async (req, res, next) => {
+  try {
+    const existing = await prisma.user.findFirst({ where: { id: req.params.id, role: 'RIDER' } });
+    if (!existing) {
+      return res.status(404).json({ success: false, message: 'Rider not found' });
+    }
+    if (existing.vendorStatus !== 'APPROVED' && existing.vendorStatus !== 'SUSPENDED') {
+      return res.status(409).json({
+        success: false,
+        message: `Cannot suspend a rider with status ${existing.vendorStatus}`,
+      });
+    }
+
+    const { reason } = req.body;
+    const suspending = existing.vendorStatus === 'APPROVED';
+    const rider = await prisma.user.update({
+      where: { id: existing.id },
+      data: suspending
+        ? { vendorStatus: 'SUSPENDED', rejectedReason: reason || 'Account suspended' }
+        : { vendorStatus: 'APPROVED', rejectedReason: null },
+    });
+
+    res.json({ success: true, message: suspending ? 'Rider suspended' : 'Rider reactivated', rider });
+  } catch (err) {
+    next(err);
+  }
+};
+
+// ─────────────────────────────────────────────
 // Admin: change rider zone
 // ─────────────────────────────────────────────
 exports.changeRiderZone = async (req, res, next) => {

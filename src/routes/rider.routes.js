@@ -15,6 +15,7 @@ router.get('/wallet/settlements', requireAuth, requireApprovedRider, walletCtrl.
 router.get('/', requireAuth, requireRole('ADMIN'), ctrl.listRiders);
 router.post('/:id/approve', requireAuth, requireRole('ADMIN'), ctrl.approveRider);
 router.post('/:id/reject', requireAuth, requireRole('ADMIN'), ctrl.rejectRider);
+router.patch('/:id/suspend', requireAuth, requireRole('ADMIN'), ctrl.toggleSuspend);
 router.patch('/:id/zone', requireAuth, requireRole('ADMIN'), ctrl.changeRiderZone);
 router.patch('/:id/cod-limit', requireAuth, requireRole('ADMIN'), ctrl.setCodLimit);
 router.patch('/:id/freeze', requireAuth, requireRole('ADMIN'), ctrl.toggleFreeze);
