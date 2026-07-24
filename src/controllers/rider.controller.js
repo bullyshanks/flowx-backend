@@ -6,6 +6,7 @@
 // ═══════════════════════════════════════════════════════════
 
 const prisma = require('../config/prisma');
+const { needsRider, tryAssignRider } = require('../services/assignment.service');
 
 // ─────────────────────────────────────────────
 // Admin: list all riders (filterable)
@@ -184,8 +185,28 @@ exports.toggleOnline = async (req, res, next) => {
     const rider = await prisma.user.update({
       where: { id: req.user.id },
       data: { isOnline },
-      select: { id: true, isOnline: true },
+      select: { id: true, zoneId: true, isOnline: true },
     });
+
+    // Mirrors updateStorefront's sweep: deliveries that needed a rider but had
+    // none online in the zone sit at riderId: null forever otherwise, since
+    // reassignIfExpired only re-checks offers that were made and expired.
+    if (rider.isOnline) {
+      const orphaned = await prisma.order.findMany({
+        where: {
+          zoneId: rider.zoneId,
+          status: 'ASSIGNED',
+          vendorId: { not: null },
+          riderId: null,
+          fulfillmentType: 'DELIVERY',
+        },
+        include: { items: { include: { product: true } } },
+      });
+      for (const order of orphaned) {
+        if (needsRider(order)) await tryAssignRider(order.id);
+      }
+    }
+
     res.json({ success: true, rider });
   } catch (err) {
     next(err);
