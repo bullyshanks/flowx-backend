@@ -6,7 +6,10 @@
 
 const prisma = require('../config/prisma');
 const { getVendorWalletSummary, getRiderWalletSummary, round2 } = require('../services/ledger.service');
-const { sendRefundPaidSms, sendVendorSettlementPaidSms, sendRiderSettlementPaidSms } = require('../services/sms.service');
+const {
+  sendRefundPaidSms, sendVendorSettlementPaidSms, sendRiderSettlementPaidSms,
+  sendAccountFrozenSms, sendAccountUnfrozenSms,
+} = require('../services/sms.service');
 
 // Current week: Monday 00:00 → next Monday 00:00
 function currentWeekRange() {
@@ -363,8 +366,14 @@ exports.toggleFreeze = async (req, res, next) => {
     const updated = await prisma.user.update({
       where: { id: vendor.id },
       data: { isFrozen },
-      select: { id: true, name: true, isFrozen: true },
+      select: { id: true, name: true, phone: true, isFrozen: true },
     });
+
+    if (updated.phone) {
+      if (isFrozen) sendAccountFrozenSms(updated.phone);
+      else sendAccountUnfrozenSms(updated.phone);
+    }
+
     res.json({ success: true, vendor: updated });
   } catch (err) {
     next(err);

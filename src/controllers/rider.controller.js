@@ -7,6 +7,7 @@
 
 const prisma = require('../config/prisma');
 const { needsRider, tryAssignRider } = require('../services/assignment.service');
+const { sendAccountFrozenSms, sendAccountUnfrozenSms } = require('../services/sms.service');
 
 // ─────────────────────────────────────────────
 // Admin: list all riders (filterable)
@@ -168,8 +169,14 @@ exports.toggleFreeze = async (req, res, next) => {
     const updated = await prisma.user.update({
       where: { id: rider.id },
       data: { isFrozen },
-      select: { id: true, name: true, isFrozen: true },
+      select: { id: true, name: true, phone: true, isFrozen: true },
     });
+
+    if (updated.phone) {
+      if (isFrozen) sendAccountFrozenSms(updated.phone);
+      else sendAccountUnfrozenSms(updated.phone);
+    }
+
     res.json({ success: true, rider: updated });
   } catch (err) {
     next(err);

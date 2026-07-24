@@ -106,6 +106,19 @@ const sendRiderSettlementPaidSms = (phone, amount) =>
     `FlowX: Your settlement of Rs. ${amount} has been paid. Check your wallet at flowx.pk for details.`
   );
 
+// Shared across vendor and rider — same account-level concept, same wording.
+const sendAccountFrozenSms = (phone) =>
+  sendSms(
+    phone,
+    `FlowX: Your account has been frozen and cannot accept new orders. Contact us on WhatsApp at +92 315 8374442 to resolve this.`
+  );
+
+const sendAccountUnfrozenSms = (phone) =>
+  sendSms(
+    phone,
+    `FlowX: Your account has been unfrozen. You can accept new orders again.`
+  );
+
 module.exports = {
   sendSms,
   sendOtpSms,
@@ -118,4 +131,6 @@ module.exports = {
   sendVendorSettlementPaidSms,
   sendRiderSettlementPaidSms,
   sendOrderCancelledSms,
+  sendAccountFrozenSms,
+  sendAccountUnfrozenSms,
 };
