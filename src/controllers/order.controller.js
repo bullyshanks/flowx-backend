@@ -152,6 +152,7 @@ exports.trackOrder = async (req, res, next) => {
         },
         statusHistory: { orderBy: { createdAt: 'asc' } },
         vendor: { select: { name: true, phone: true } },
+        rider: { select: { name: true, phone: true } },
       },
     });
 
