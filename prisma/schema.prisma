@@ -142,6 +142,7 @@ model User {
   settlements        Settlement[]
   riderLedgerEntries RiderLedgerEntry[]
   riderSettlements   RiderSettlement[]
+  vendorProducts     VendorProduct[]
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -181,14 +182,36 @@ model Product {
   riderEarningPerUnit Decimal  @default(0) @db.Decimal(10, 2)
   hasRiderDelivery    Boolean  @default(true) // false for 1000L tank
 
-  orderItems    OrderItem[]
-  subscriptions Subscription[]
+  orderItems     OrderItem[]
+  subscriptions  Subscription[]
+  vendorProducts VendorProduct[]
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
   @@index([slug])
   @@index([isActive])
+}
+
+// A vendor's own price + stock override for one catalog product. Absence of
+// a row means the vendor sells it at Product.price and carries it in stock —
+// this is an opt-out model, not opt-in, so existing vendors need no setup.
+// Commission % and rider earning stay global/product-level (FlowX's own
+// take-rate policy) — only the vendor's selling price and availability are
+// per-vendor here.
+model VendorProduct {
+  id        String   @id @default(uuid())
+  vendorId  String
+  vendor    User     @relation(fields: [vendorId], references: [id], onDelete: Cascade)
+  productId String
+  product   Product  @relation(fields: [productId], references: [id], onDelete: Cascade)
+  price     Decimal? @db.Decimal(10, 2) // null = use Product.price
+  inStock   Boolean  @default(true)
+  updatedAt DateTime @updatedAt
+  createdAt DateTime @default(now())
+
+  @@unique([vendorId, productId])
+  @@index([productId])
 }
 
 model Order {

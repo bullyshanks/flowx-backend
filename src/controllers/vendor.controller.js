@@ -170,6 +170,94 @@ exports.updateStorefront = async (req, res, next) => {
 };
 
 // ─────────────────────────────────────────────
+// Vendor: list my product catalog with my own price/stock overrides
+// ─────────────────────────────────────────────
+exports.listMyProducts = async (req, res, next) => {
+  try {
+    const [products, overrides] = await Promise.all([
+      prisma.product.findMany({ where: { isActive: true }, orderBy: { name: 'asc' } }),
+      prisma.vendorProduct.findMany({ where: { vendorId: req.user.id } }),
+    ]);
+
+    const products_ = products.map((p) => {
+      const override = overrides.find((o) => o.productId === p.id);
+      return {
+        id: p.id,
+        name: p.name,
+        unit: p.unit,
+        minQuantity: p.minQuantity,
+        imageUrl: p.imageUrl,
+        catalogPrice: p.price,
+        price: override?.price != null ? override.price : p.price,
+        hasOverridePrice: override?.price != null,
+        inStock: override ? override.inStock : true,
+      };
+    });
+
+    res.json({ success: true, products: products_ });
+  } catch (err) {
+    next(err);
+  }
+};
+
+// ─────────────────────────────────────────────
+// Vendor: set my own price and/or stock for one product
+// PATCH /me/products/:productId — { price?: number|null, inStock?: boolean }
+// price: null resets to the catalog price.
+// ─────────────────────────────────────────────
+exports.updateMyProduct = async (req, res, next) => {
+  try {
+    const { productId } = req.params;
+    const { price, inStock } = req.body;
+
+    const product = await prisma.product.findFirst({ where: { id: productId, isActive: true } });
+    if (!product) {
+      return res.status(404).json({ success: false, message: 'Product not found' });
+    }
+
+    const data = {};
+    if (price !== undefined) {
+      if (price === null) {
+        data.price = null;
+      } else {
+        const value = Number(price);
+        if (Number.isNaN(value) || value < 0) {
+          return res.status(400).json({ success: false, message: 'price must be >= 0 (or null to use catalog price)' });
+        }
+        data.price = value;
+      }
+    }
+    if (typeof inStock === 'boolean') data.inStock = inStock;
+    if (Object.keys(data).length === 0) {
+      return res.status(400).json({ success: false, message: 'Nothing to update' });
+    }
+
+    const updated = await prisma.vendorProduct.upsert({
+      where: { vendorId_productId: { vendorId: req.user.id, productId } },
+      update: data,
+      create: { vendorId: req.user.id, productId, ...data },
+    });
+
+    // Coming back in stock (or re-listing at a price) can unblock pending
+    // orders that never got offered to anyone in this zone — mirrors the
+    // storefront-reopen sweep in updateStorefront above.
+    if (updated.inStock) {
+      const orphaned = await prisma.order.findMany({
+        where: { zoneId: req.user.zoneId, status: 'PENDING', vendorId: null, offeredVendorId: null },
+        select: { id: true },
+      });
+      for (const order of orphaned) {
+        await tryAssignVendor(order.id);
+      }
+    }
+
+    res.json({ success: true, product: updated });
+  } catch (err) {
+    next(err);
+  }
+};
+
+// ─────────────────────────────────────────────
 // Vendor: dashboard stats
 // ─────────────────────────────────────────────
 exports.dashboard = async (req, res, next) => {

@@ -17,11 +17,13 @@ function needsRider(order) {
   return order.fulfillmentType === 'DELIVERY' && order.items.every((i) => i.product.hasRiderDelivery);
 }
 
-// Next eligible vendor in the order's zone, excluding one id (the vendor whose
-// offer just expired/was rejected). Simple id-order cycling — good enough for
-// a check-on-read pattern; a real dispatcher can replace this later.
-async function findNextVendor(order, excludeId) {
-  return prisma.user.findFirst({
+// Next eligible vendor in the zone carrying every one of productIds in stock
+// (a vendor with no VendorProduct row for a product is assumed to carry it —
+// opt-out model, see schema), excluding one id (the vendor whose offer just
+// expired/was rejected). Simple id-order cycling — good enough for a
+// check-on-read pattern; a real dispatcher can replace this later.
+async function findNextVendor({ zoneId, productIds = [] }, excludeId) {
+  const candidates = await prisma.user.findMany({
     where: {
       role: 'VENDOR',
       vendorStatus: 'APPROVED',
@@ -29,11 +31,15 @@ async function findNextVendor(order, excludeId) {
       isFrozen: false,
       isOpen: true,
       stockStatus: true,
-      zoneId: order.zoneId,
+      zoneId,
       ...(excludeId && { id: { not: excludeId } }),
     },
     orderBy: { id: 'asc' },
+    include: {
+      vendorProducts: { where: { productId: { in: productIds }, inStock: false } },
+    },
   });
+  return candidates.find((v) => v.vendorProducts.length === 0) || null;
 }
 
 async function findNextRider(order, excludeId) {
@@ -53,10 +59,13 @@ async function findNextRider(order, excludeId) {
 
 // Offer the order to a vendor (or clear the offer if none available).
 async function tryAssignVendor(orderId, excludeVendorId = null) {
-  const order = await prisma.order.findUnique({ where: { id: orderId } });
+  const order = await prisma.order.findUnique({ where: { id: orderId }, include: { items: true } });
   if (!order || order.vendorId) return order; // already accepted, nothing to do
 
-  const candidate = await findNextVendor(order, excludeVendorId);
+  const candidate = await findNextVendor(
+    { zoneId: order.zoneId, productIds: order.items.map((i) => i.productId) },
+    excludeVendorId
+  );
   const updated = await prisma.order.update({
     where: { id: order.id },
     data: candidate

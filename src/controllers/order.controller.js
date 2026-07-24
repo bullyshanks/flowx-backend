@@ -8,7 +8,7 @@ const { generateOrderNumber } = require('../utils/generators');
 const { sendOrderConfirmationSms, sendOrderAssignedSms } = require('../services/sms.service');
 const { createDeliveryLedgerEntries } = require('../services/ledger.service');
 const {
-  needsRider, tryAssignVendor, tryAssignRider, reassignIfExpired,
+  needsRider, tryAssignVendor, tryAssignRider, reassignIfExpired, findNextVendor,
 } = require('../services/assignment.service');
 
 // ─────────────────────────────────────────────
@@ -66,6 +66,26 @@ exports.placeOrder = async (req, res, next) => {
       return res.status(400).json({ success: false, message: 'One or more products not available' });
     }
 
+    // ─── Resolve pricing vendor ──
+    // Vendors set their own price/stock per product (VendorProduct override —
+    // see schema). Whichever vendor would actually be offered this order gets
+    // to set the price the customer pays; if none is available in the zone
+    // right now, fall back to each product's catalog price (order still gets
+    // created and offered once a vendor becomes available, same as before).
+    // Price is locked in at placement — if this vendor's offer later expires
+    // and the order reassigns to a different vendor, we don't re-price; the
+    // customer already agreed to this total.
+    const pricingVendor = await findNextVendor({ zoneId, productIds });
+    const overrides = pricingVendor
+      ? await prisma.vendorProduct.findMany({
+          where: { vendorId: pricingVendor.id, productId: { in: productIds } },
+        })
+      : [];
+    const priceOf = (product) => {
+      const override = overrides.find((o) => o.productId === product.id);
+      return override?.price != null ? Number(override.price) : Number(product.price);
+    };
+
     let subtotal = 0;
     const orderItems = items.map((i) => {
       const product = products.find((p) => p.id === i.productId);
@@ -75,12 +95,13 @@ exports.placeOrder = async (req, res, next) => {
           { status: 400 }
         );
       }
-      const lineTotal = Number(product.price) * i.quantity;
+      const unitPrice = priceOf(product);
+      const lineTotal = unitPrice * i.quantity;
       subtotal += lineTotal;
       return {
         productId: product.id,
         quantity: i.quantity,
-        unitPrice: product.price,
+        unitPrice,
         total: lineTotal,
       };
     });
