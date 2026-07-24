@@ -89,10 +89,20 @@ async function processDueSubscriptions() {
   for (const sub of due) {
     try {
       const order = await processSubscription(sub);
-      if (order) results.processed += 1;
+      if (order) {
+        results.processed += 1;
+        await prisma.subscription.update({
+          where: { id: sub.id },
+          data: { lastError: null, lastAttemptAt: new Date() },
+        });
+      }
     } catch (err) {
       results.failed += 1;
       console.error(`[subscription.service] Failed to process subscription ${sub.id}:`, err.message);
+      await prisma.subscription.update({
+        where: { id: sub.id },
+        data: { lastError: err.message.slice(0, 500), lastAttemptAt: new Date() },
+      }).catch(() => {});
     }
   }
   return results;

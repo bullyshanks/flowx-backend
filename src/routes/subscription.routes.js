@@ -12,5 +12,8 @@ router.post('/:id/cancel', requireAuth, requireRole('CUSTOMER'), ctrl.cancel);
 
 // Admin
 router.get('/admin/all', requireAuth, requireRole('ADMIN'), ctrl.adminList);
+router.post('/admin/:id/pause', requireAuth, requireRole('ADMIN'), ctrl.adminPause);
+router.post('/admin/:id/resume', requireAuth, requireRole('ADMIN'), ctrl.adminResume);
+router.post('/admin/:id/cancel', requireAuth, requireRole('ADMIN'), ctrl.adminCancel);
 
 module.exports = router;

@@ -333,6 +333,12 @@ model Subscription {
   nextDeliveryDate DateTime?
   endDate          DateTime?
 
+  // Sweep failure visibility — lastError is cleared on the next successful
+  // run; without this a repeatedly-failing subscription looks identical to
+  // a healthy one in the admin panel.
+  lastError     String?
+  lastAttemptAt DateTime?
+
   orders Order[]
 
   createdAt DateTime @default(now())

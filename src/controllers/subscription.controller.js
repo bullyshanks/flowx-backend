@@ -103,3 +103,46 @@ exports.adminList = async (req, res, next) => {
     next(err);
   }
 };
+
+// Admin: pause/resume/cancel any customer's subscription — the customer-self
+// endpoints above are scoped to req.user.id and can't reach these; admin
+// needs to be able to act on a customer's behalf (support request, stuck
+// subscription, etc).
+exports.adminPause = async (req, res, next) => {
+  try {
+    const sub = await prisma.subscription.update({
+      where: { id: req.params.id },
+      data: { status: 'PAUSED' },
+    });
+    res.json({ success: true, subscription: sub });
+  } catch (err) {
+    if (err.code === 'P2025') return res.status(404).json({ success: false, message: 'Subscription not found' });
+    next(err);
+  }
+};
+
+exports.adminResume = async (req, res, next) => {
+  try {
+    const sub = await prisma.subscription.update({
+      where: { id: req.params.id },
+      data: { status: 'ACTIVE' },
+    });
+    res.json({ success: true, subscription: sub });
+  } catch (err) {
+    if (err.code === 'P2025') return res.status(404).json({ success: false, message: 'Subscription not found' });
+    next(err);
+  }
+};
+
+exports.adminCancel = async (req, res, next) => {
+  try {
+    const sub = await prisma.subscription.update({
+      where: { id: req.params.id },
+      data: { status: 'CANCELLED', endDate: new Date() },
+    });
+    res.json({ success: true, subscription: sub });
+  } catch (err) {
+    if (err.code === 'P2025') return res.status(404).json({ success: false, message: 'Subscription not found' });
+    next(err);
+  }
+};
