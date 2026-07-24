@@ -5,6 +5,7 @@
 
 const prisma = require('../config/prisma');
 const { sendVendorApprovedSms } = require('../services/sms.service');
+const { tryAssignVendor } = require('../services/assignment.service');
 
 // ─────────────────────────────────────────────
 // Admin: list all vendors (filterable)
@@ -140,8 +141,28 @@ exports.updateStorefront = async (req, res, next) => {
     const vendor = await prisma.user.update({
       where: { id: req.user.id },
       data,
-      select: { id: true, isOpen: true, stockStatus: true },
+      select: { id: true, zoneId: true, isOpen: true, stockStatus: true },
     });
+
+    // Reopening (or restocking) can unblock orders that never got offered to
+    // anyone because no vendor was eligible in the zone at the time — those
+    // otherwise sit stuck forever, since reassignIfExpired only re-checks
+    // offers that were made and expired, not orders that never got one.
+    if (vendor.isOpen && vendor.stockStatus) {
+      const orphaned = await prisma.order.findMany({
+        where: {
+          zoneId: vendor.zoneId,
+          status: 'PENDING',
+          vendorId: null,
+          offeredVendorId: null,
+        },
+        select: { id: true },
+      });
+      for (const order of orphaned) {
+        await tryAssignVendor(order.id);
+      }
+    }
+
     res.json({ success: true, vendor });
   } catch (err) {
     next(err);
