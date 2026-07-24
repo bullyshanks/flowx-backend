@@ -95,9 +95,8 @@ async function unsettledEntriesByVendor(periodStart, periodEnd) {
  * owed regardless of who ends up holding the COD cash, so unlike vendors
  * there's no COD carve-out here. Cash a rider collected on a COD delivery
  * is tracked separately via codLiability (incremented directly at delivery,
- * not through a ledger entry) and isn't netted against this payout — there's
- * no ledger line to attribute it to a period from, so clearing it here would
- * be a guess, not a reconciliation. It stays a separate concern for now.
+ * not through a ledger entry), so it isn't part of this period-totals calc —
+ * see payRiderSettlement, which clears it directly from delivered COD orders.
  */
 function computeRiderPeriodTotals(entries) {
   let totalEarning = 0;
@@ -624,7 +623,31 @@ exports.payRiderSettlement = async (req, res, next) => {
       return res.status(409).json({ success: false, message: `Settlement must be APPROVED first (currently ${settlement.status})` });
     }
 
+    // COD cash the rider collected this period — this is exactly what codLiability
+    // was incremented by at delivery time (see ledger.service.createDeliveryLedgerEntries),
+    // so paying the rider out settles that debt too.
+    const codDeliveries = await prisma.order.findMany({
+      where: {
+        riderId: settlement.riderId,
+        paymentMethod: 'COD',
+        fulfillmentType: 'DELIVERY',
+        deliveredAt: { gte: settlement.periodStart, lt: settlement.periodEnd },
+      },
+      select: { subtotal: true },
+    });
+    const codCollected = round2(codDeliveries.reduce((acc, o) => acc + Number(o.subtotal), 0));
+
     const paid = await prisma.$transaction(async (tx) => {
+      const rider = await tx.user.findUnique({ where: { id: settlement.riderId } });
+      const liabilityCleared = Math.min(codCollected, Number(rider.codLiability));
+
+      if (liabilityCleared > 0) {
+        await tx.user.update({
+          where: { id: settlement.riderId },
+          data: { codLiability: { decrement: liabilityCleared } },
+        });
+      }
+
       await tx.riderLedgerEntry.create({
         data: {
           riderId: settlement.riderId,
