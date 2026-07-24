@@ -9,14 +9,16 @@ exports.dashboard = async (req, res, next) => {
     const startOfMonth = new Date(today.getFullYear(), today.getMonth(), 1);
 
     const [
-      totalCustomers, totalVendors, pendingVendors,
+      totalCustomers, totalVendors, pendingVendors, totalRiders, pendingRiders,
       todayOrders, monthOrders, pendingOrders,
       activeSubscriptions, totalRevenueAgg, monthRevenueAgg,
-      codCollectedAgg, onlineReceivedAgg, codLiabilityAgg, commissionAgg, frozenVendors,
+      codCollectedAgg, onlineReceivedAgg, codLiabilityAgg, commissionAgg, frozenVendors, frozenRiders,
     ] = await Promise.all([
       prisma.user.count({ where: { role: 'CUSTOMER' } }),
       prisma.user.count({ where: { role: 'VENDOR', vendorStatus: 'APPROVED' } }),
       prisma.user.count({ where: { role: 'VENDOR', vendorStatus: 'PENDING' } }),
+      prisma.user.count({ where: { role: 'RIDER', vendorStatus: 'APPROVED' } }),
+      prisma.user.count({ where: { role: 'RIDER', vendorStatus: 'PENDING' } }),
       prisma.order.count({ where: { createdAt: { gte: today } } }),
       prisma.order.count({ where: { createdAt: { gte: startOfMonth } } }),
       prisma.order.count({ where: { status: { in: ['PENDING', 'CONFIRMED'] } } }),
@@ -28,12 +30,17 @@ exports.dashboard = async (req, res, next) => {
       prisma.user.aggregate({ _sum: { codLiability: true }, where: { role: 'VENDOR' } }),
       prisma.ledgerEntry.aggregate({ _sum: { amount: true }, where: { type: 'COMMISSION_DEDUCTED' } }),
       prisma.user.count({ where: { role: 'VENDOR', isFrozen: true } }),
+      prisma.user.count({ where: { role: 'RIDER', isFrozen: true } }),
     ]);
 
     res.json({
       success: true,
       stats: {
-        users: { customers: totalCustomers, vendors: totalVendors, pendingVendors },
+        users: {
+          customers: totalCustomers,
+          vendors: totalVendors, pendingVendors,
+          riders: totalRiders, pendingRiders,
+        },
         orders: { today: todayOrders, month: monthOrders, pending: pendingOrders },
         subscriptions: { active: activeSubscriptions },
         revenue: {
@@ -46,6 +53,7 @@ exports.dashboard = async (req, res, next) => {
           outstandingCodLiability: Number(codLiabilityAgg._sum.codLiability || 0),
           commissionRevenue: -Number(commissionAgg._sum.amount || 0),
           frozenVendors,
+          frozenRiders,
         },
       },
     });
