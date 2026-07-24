@@ -2,8 +2,22 @@
 require('dotenv').config();
 const app = require('./app');
 const prisma = require('./config/prisma');
+const { processDueSubscriptions } = require('./services/subscription.service');
+const { SUBSCRIPTION_CHECK_INTERVAL_MINUTES } = require('./config/subscription');
 
 const PORT = process.env.PORT || 4000;
+
+let subscriptionInterval = null;
+
+function runSubscriptionSweep() {
+  processDueSubscriptions()
+    .then(({ processed, failed }) => {
+      if (processed || failed) {
+        console.log(`[subscriptions] processed ${processed}, failed ${failed}`);
+      }
+    })
+    .catch((err) => console.error('[subscriptions] sweep error:', err));
+}
 
 async function start() {
   try {
@@ -18,6 +32,9 @@ async function start() {
       console.log(`║  🌐 http://localhost:${PORT}/api/health      ║`);
       console.log('╚════════════════════════════════════════════╝\n');
     });
+
+    runSubscriptionSweep();
+    subscriptionInterval = setInterval(runSubscriptionSweep, SUBSCRIPTION_CHECK_INTERVAL_MINUTES * 60 * 1000);
   } catch (err) {
     console.error('❌ Failed to start server:', err);
     process.exit(1);
@@ -27,6 +44,7 @@ async function start() {
 // Graceful shutdown
 process.on('SIGINT', async () => {
   console.log('\nShutting down...');
+  if (subscriptionInterval) clearInterval(subscriptionInterval);
   await prisma.$disconnect();
   process.exit(0);
 });
