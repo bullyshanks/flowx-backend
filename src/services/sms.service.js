@@ -94,6 +94,18 @@ const sendOrderCancelledSms = (phone, orderNumber) =>
     `FlowX: Order ${orderNumber} has been cancelled. Contact us on WhatsApp at +92 315 8374442 if you have questions.`
   );
 
+const sendVendorSettlementPaidSms = (phone, amount) =>
+  sendSms(
+    phone,
+    `FlowX: Your settlement of Rs. ${amount} has been paid. Check your wallet at flowx.pk for details.`
+  );
+
+const sendRiderSettlementPaidSms = (phone, amount) =>
+  sendSms(
+    phone,
+    `FlowX: Your settlement of Rs. ${amount} has been paid. Check your wallet at flowx.pk for details.`
+  );
+
 module.exports = {
   sendSms,
   sendOtpSms,
@@ -103,5 +115,7 @@ module.exports = {
   sendRefundPaidSms,
   sendOrderOutForDeliverySms,
   sendOrderDeliveredSms,
+  sendVendorSettlementPaidSms,
+  sendRiderSettlementPaidSms,
   sendOrderCancelledSms,
 };

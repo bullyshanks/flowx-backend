@@ -6,7 +6,7 @@
 
 const prisma = require('../config/prisma');
 const { getVendorWalletSummary, getRiderWalletSummary, round2 } = require('../services/ledger.service');
-const { sendRefundPaidSms } = require('../services/sms.service');
+const { sendRefundPaidSms, sendVendorSettlementPaidSms, sendRiderSettlementPaidSms } = require('../services/sms.service');
 
 // Current week: Monday 00:00 → next Monday 00:00
 function currentWeekRange() {
@@ -513,6 +513,13 @@ exports.paySettlement = async (req, res, next) => {
       });
     });
 
+    // A negative netPayable means the vendor owed FlowX (COD case), not a
+    // payout — nothing to congratulate them on, so no SMS in that case.
+    if (Number(settlement.netPayable) > 0) {
+      const vendor = await prisma.user.findUnique({ where: { id: settlement.vendorId }, select: { phone: true } });
+      if (vendor?.phone) sendVendorSettlementPaidSms(vendor.phone, settlement.netPayable);
+    }
+
     res.json({ success: true, settlement: paid });
   } catch (err) {
     next(err);
@@ -663,6 +670,11 @@ exports.payRiderSettlement = async (req, res, next) => {
         data: { status: 'PAID', paidAt: new Date(), paymentMethod, paymentReference: paymentReference || null },
       });
     });
+
+    if (Number(settlement.netPayable) > 0) {
+      const rider = await prisma.user.findUnique({ where: { id: settlement.riderId }, select: { phone: true } });
+      if (rider?.phone) sendRiderSettlementPaidSms(rider.phone, settlement.netPayable);
+    }
 
     res.json({ success: true, settlement: paid });
   } catch (err) {
