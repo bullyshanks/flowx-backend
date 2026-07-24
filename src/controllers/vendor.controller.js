@@ -4,7 +4,9 @@
 // ═══════════════════════════════════════════════════════════
 
 const prisma = require('../config/prisma');
-const { sendVendorApprovedSms, sendAccountSuspendedSms, sendAccountReactivatedSms } = require('../services/sms.service');
+const {
+  sendVendorApprovedSms, sendAccountSuspendedSms, sendAccountReactivatedSms, sendAccountRejectedSms,
+} = require('../services/sms.service');
 const { tryAssignVendor } = require('../services/assignment.service');
 
 // ─────────────────────────────────────────────
@@ -71,6 +73,9 @@ exports.rejectVendor = async (req, res, next) => {
         rejectedReason: reason || 'Application rejected',
       },
     });
+
+    if (vendor.phone) sendAccountRejectedSms(vendor.phone, reason);
+
     res.json({ success: true, message: 'Vendor rejected', vendor });
   } catch (err) {
     next(err);

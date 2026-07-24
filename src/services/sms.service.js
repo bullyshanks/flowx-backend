@@ -131,6 +131,12 @@ const sendAccountReactivatedSms = (phone) =>
     `FlowX: Your account has been reactivated. You can log in again.`
   );
 
+const sendAccountRejectedSms = (phone, reason) =>
+  sendSms(
+    phone,
+    `FlowX: Your application was not approved${reason ? ` — ${reason}` : ''}. Contact us on WhatsApp at +92 315 8374442 if you have questions.`
+  );
+
 module.exports = {
   sendSms,
   sendOtpSms,
@@ -147,4 +153,5 @@ module.exports = {
   sendAccountUnfrozenSms,
   sendAccountSuspendedSms,
   sendAccountReactivatedSms,
+  sendAccountRejectedSms,
 };

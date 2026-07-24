@@ -9,7 +9,7 @@ const prisma = require('../config/prisma');
 const { needsRider, tryAssignRider } = require('../services/assignment.service');
 const {
   sendAccountFrozenSms, sendAccountUnfrozenSms,
-  sendAccountSuspendedSms, sendAccountReactivatedSms,
+  sendAccountSuspendedSms, sendAccountReactivatedSms, sendAccountRejectedSms,
 } = require('../services/sms.service');
 
 // ─────────────────────────────────────────────
@@ -74,6 +74,9 @@ exports.rejectRider = async (req, res, next) => {
         rejectedReason: reason || 'Application rejected',
       },
     });
+
+    if (rider.phone) sendAccountRejectedSms(rider.phone, reason);
+
     res.json({ success: true, message: 'Rider rejected', rider });
   } catch (err) {
     next(err);
