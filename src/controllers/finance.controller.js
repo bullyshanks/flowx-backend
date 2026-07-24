@@ -6,6 +6,7 @@
 
 const prisma = require('../config/prisma');
 const { getVendorWalletSummary, getRiderWalletSummary, round2 } = require('../services/ledger.service');
+const { sendRefundPaidSms } = require('../services/sms.service');
 
 // Current week: Monday 00:00 → next Monday 00:00
 function currentWeekRange() {
@@ -824,7 +825,10 @@ exports.payRefund = async (req, res, next) => {
       return res.status(400).json({ success: false, message: 'paymentMethod required' });
     }
 
-    const refund = await prisma.refund.findUnique({ where: { id: req.params.id }, include: { order: true } });
+    const refund = await prisma.refund.findUnique({
+      where: { id: req.params.id },
+      include: { order: true, customer: { select: { phone: true } } },
+    });
     if (!refund) {
       return res.status(404).json({ success: false, message: 'Refund not found' });
     }
@@ -861,6 +865,9 @@ exports.payRefund = async (req, res, next) => {
         data: { status: 'PAID', paidAt: new Date(), paymentMethod, paymentReference: paymentReference || null },
       });
     });
+
+    const phone = refund.customer?.phone || refund.order.guestPhone;
+    if (phone) sendRefundPaidSms(phone, refund.order.orderNumber, refund.amount);
 
     res.json({ success: true, refund: paid });
   } catch (err) {

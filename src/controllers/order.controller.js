@@ -180,6 +180,14 @@ exports.trackOrder = async (req, res, next) => {
         statusHistory: { orderBy: { createdAt: 'asc' } },
         vendor: { select: { name: true, phone: true } },
         rider: { select: { name: true, phone: true } },
+        // REJECTED refunds were never actually going to happen from the
+        // customer's perspective (they never requested one) — showing that
+        // would just confuse, not inform, so it's excluded here.
+        refunds: {
+          where: { status: { in: ['PENDING', 'APPROVED', 'PAID'] } },
+          select: { amount: true, status: true, reason: true, paidAt: true, createdAt: true },
+          orderBy: { createdAt: 'desc' },
+        },
       },
     });
 

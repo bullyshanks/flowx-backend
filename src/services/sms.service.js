@@ -70,10 +70,17 @@ const sendVendorApprovedSms = (phone) =>
     `FlowX: Your vendor account is approved! Login at flowx.pk/vendor to start receiving orders.`
   );
 
+const sendRefundPaidSms = (phone, orderNumber, amount) =>
+  sendSms(
+    phone,
+    `FlowX: Rs. ${amount} refunded for order ${orderNumber}. Track at flowx.pk/track. Thank you for your patience!`
+  );
+
 module.exports = {
   sendSms,
   sendOtpSms,
   sendOrderConfirmationSms,
   sendOrderAssignedSms,
   sendVendorApprovedSms,
+  sendRefundPaidSms,
 };
