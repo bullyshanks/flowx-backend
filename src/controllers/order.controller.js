@@ -5,7 +5,10 @@
 
 const prisma = require('../config/prisma');
 const { generateOrderNumber } = require('../utils/generators');
-const { sendOrderConfirmationSms, sendOrderAssignedSms } = require('../services/sms.service');
+const {
+  sendOrderConfirmationSms, sendOrderAssignedSms,
+  sendOrderOutForDeliverySms, sendOrderDeliveredSms, sendOrderCancelledSms,
+} = require('../services/sms.service');
 const { createDeliveryLedgerEntries } = require('../services/ledger.service');
 const {
   needsRider, tryAssignVendor, tryAssignRider, reassignIfExpired, findNextVendor,
@@ -458,6 +461,15 @@ exports.updateStatus = async (req, res, next) => {
     // Ledger entries are created once per order (service is idempotent)
     if (status === 'DELIVERED' && order.status !== 'DELIVERED') {
       await createDeliveryLedgerEntries(order.id);
+    }
+
+    // Notify customer of the status change
+    const customerPhone = order.guestPhone
+      || (order.customerId && (await prisma.user.findUnique({ where: { id: order.customerId } }))?.phone);
+    if (customerPhone) {
+      if (status === 'OUT_FOR_DELIVERY') sendOrderOutForDeliverySms(customerPhone, order.orderNumber);
+      else if (status === 'DELIVERED') sendOrderDeliveredSms(customerPhone, order.orderNumber);
+      else if (status === 'CANCELLED') sendOrderCancelledSms(customerPhone, order.orderNumber);
     }
 
     res.json({ success: true, order: updated });

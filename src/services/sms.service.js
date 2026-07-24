@@ -76,6 +76,24 @@ const sendRefundPaidSms = (phone, orderNumber, amount) =>
     `FlowX: Rs. ${amount} refunded for order ${orderNumber}. Track at flowx.pk/track. Thank you for your patience!`
   );
 
+const sendOrderOutForDeliverySms = (phone, orderNumber) =>
+  sendSms(
+    phone,
+    `FlowX: Order ${orderNumber} is out for delivery! Track at flowx.pk/track.`
+  );
+
+const sendOrderDeliveredSms = (phone, orderNumber) =>
+  sendSms(
+    phone,
+    `FlowX: Order ${orderNumber} has been delivered. Thank you for choosing FlowX!`
+  );
+
+const sendOrderCancelledSms = (phone, orderNumber) =>
+  sendSms(
+    phone,
+    `FlowX: Order ${orderNumber} has been cancelled. Contact us on WhatsApp at +92 315 8374442 if you have questions.`
+  );
+
 module.exports = {
   sendSms,
   sendOtpSms,
@@ -83,4 +101,7 @@ module.exports = {
   sendOrderAssignedSms,
   sendVendorApprovedSms,
   sendRefundPaidSms,
+  sendOrderOutForDeliverySms,
+  sendOrderDeliveredSms,
+  sendOrderCancelledSms,
 };
