@@ -310,10 +310,12 @@ exports.login = async (req, res, next) => {
     if (user.role === 'VENDOR' || user.role === 'RIDER') {
       const label = user.role === 'VENDOR' ? 'Vendor' : 'Rider';
       if (user.vendorStatus !== 'APPROVED') {
-        return res.status(403).json({
-          success: false,
-          message: `${label} account status: ${user.vendorStatus}. Awaiting approval.`,
-        });
+        const message = user.vendorStatus === 'REJECTED'
+          ? `${label} application rejected${user.rejectedReason ? `: ${user.rejectedReason}` : ''}.`
+          : user.vendorStatus === 'SUSPENDED'
+            ? `${label} account suspended. Contact FlowX admin.`
+            : `${label} account status: ${user.vendorStatus}. Awaiting approval.`;
+        return res.status(403).json({ success: false, message });
       }
     }
 
