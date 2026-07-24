@@ -41,9 +41,83 @@ exports.getZones = async (req, res, next) => {
 };
 
 // ── Admin only ──
+// Whitelisted, validated fields only — never pass req.body straight to
+// Prisma here (id/createdAt/updatedAt must never be caller-settable).
+function pickAndValidateProductFields(body, { partial }) {
+  const data = {};
+  const err = (message) => Object.assign(new Error(message), { status: 400 });
+
+  if (body.name !== undefined) {
+    if (typeof body.name !== 'string' || !body.name.trim()) throw err('name must be a non-empty string');
+    data.name = body.name.trim();
+  } else if (!partial) {
+    throw err('name is required');
+  }
+
+  if (body.slug !== undefined) {
+    if (typeof body.slug !== 'string' || !body.slug.trim()) throw err('slug must be a non-empty string');
+    data.slug = body.slug.trim();
+  } else if (!partial) {
+    throw err('slug is required');
+  }
+
+  if (body.price !== undefined) {
+    const price = Number(body.price);
+    if (Number.isNaN(price) || price < 0) throw err('price must be a number >= 0');
+    data.price = price;
+  } else if (!partial) {
+    throw err('price is required');
+  }
+
+  if (body.unit !== undefined) {
+    if (typeof body.unit !== 'string' || !body.unit.trim()) throw err('unit must be a non-empty string');
+    data.unit = body.unit.trim();
+  } else if (!partial) {
+    throw err('unit is required');
+  }
+
+  if (body.description !== undefined) data.description = body.description === null ? null : String(body.description);
+  if (body.imageUrl !== undefined) data.imageUrl = body.imageUrl === null ? null : String(body.imageUrl);
+
+  if (body.minQuantity !== undefined) {
+    const minQuantity = Number(body.minQuantity);
+    if (!Number.isInteger(minQuantity) || minQuantity < 1) throw err('minQuantity must be an integer >= 1');
+    data.minQuantity = minQuantity;
+  }
+
+  if (body.commissionPct !== undefined) {
+    if (body.commissionPct === null) {
+      data.commissionPct = null;
+    } else {
+      const pct = Number(body.commissionPct);
+      if (Number.isNaN(pct) || pct < 0 || pct > 100) throw err('commissionPct must be 0-100 (or null for default)');
+      data.commissionPct = pct;
+    }
+  }
+
+  if (body.riderEarningPerUnit !== undefined) {
+    const rate = Number(body.riderEarningPerUnit);
+    if (Number.isNaN(rate) || rate < 0) throw err('riderEarningPerUnit must be >= 0');
+    data.riderEarningPerUnit = rate;
+  }
+
+  if (body.hasRiderDelivery !== undefined) {
+    if (typeof body.hasRiderDelivery !== 'boolean') throw err('hasRiderDelivery must be a boolean');
+    data.hasRiderDelivery = body.hasRiderDelivery;
+  }
+
+  if (body.isActive !== undefined) {
+    if (typeof body.isActive !== 'boolean') throw err('isActive must be a boolean');
+    data.isActive = body.isActive;
+  }
+
+  return data;
+}
+
 exports.create = async (req, res, next) => {
   try {
-    const product = await prisma.product.create({ data: req.body });
+    const data = pickAndValidateProductFields(req.body, { partial: false });
+    const product = await prisma.product.create({ data });
     res.status(201).json({ success: true, product });
   } catch (err) {
     next(err);
@@ -52,9 +126,13 @@ exports.create = async (req, res, next) => {
 
 exports.update = async (req, res, next) => {
   try {
+    const data = pickAndValidateProductFields(req.body, { partial: true });
+    if (Object.keys(data).length === 0) {
+      return res.status(400).json({ success: false, message: 'Nothing to update' });
+    }
     const product = await prisma.product.update({
       where: { id: req.params.id },
-      data: req.body,
+      data,
     });
     res.json({ success: true, product });
   } catch (err) {
