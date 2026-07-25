@@ -8,7 +8,7 @@ const prisma = require('../config/prisma');
 const { getVendorWalletSummary, getRiderWalletSummary, round2 } = require('../services/ledger.service');
 const { unassignVendorOrders } = require('../services/assignment.service');
 const {
-  sendRefundPaidSms, sendVendorSettlementPaidSms, sendRiderSettlementPaidSms,
+  sendRefundPaidSms, sendRefundRejectedSms, sendVendorSettlementPaidSms, sendRiderSettlementPaidSms,
   sendAccountFrozenSms, sendAccountUnfrozenSms,
 } = require('../services/sms.service');
 
@@ -855,7 +855,10 @@ exports.approveRefund = async (req, res, next) => {
 exports.rejectRefund = async (req, res, next) => {
   try {
     const { reason } = req.body;
-    const refund = await prisma.refund.findUnique({ where: { id: req.params.id } });
+    const refund = await prisma.refund.findUnique({
+      where: { id: req.params.id },
+      include: { order: { select: { orderNumber: true, guestPhone: true } }, customer: { select: { phone: true } } },
+    });
     if (!refund) {
       return res.status(404).json({ success: false, message: 'Refund not found' });
     }
@@ -867,6 +870,9 @@ exports.rejectRefund = async (req, res, next) => {
       where: { id: refund.id },
       data: { status: 'REJECTED', rejectedReason: reason ? String(reason).trim() : null },
     });
+
+    const phone = refund.customer?.phone || refund.order.guestPhone;
+    if (phone) sendRefundRejectedSms(phone, refund.order.orderNumber, reason);
 
     res.json({ success: true, refund: updated });
   } catch (err) {
