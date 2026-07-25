@@ -11,6 +11,10 @@ const {
   sendAccountFrozenSms, sendAccountUnfrozenSms, sendRiderApprovedSms,
   sendAccountSuspendedSms, sendAccountReactivatedSms, sendAccountRejectedSms,
 } = require('../services/sms.service');
+const {
+  sendAccountFrozenPush, sendAccountUnfrozenPush, sendRiderApprovedPush,
+  sendAccountSuspendedPush, sendAccountReactivatedPush, sendAccountRejectedPush,
+} = require('../services/push.service');
 
 // ─────────────────────────────────────────────
 // Admin: list all riders (filterable)
@@ -67,6 +71,7 @@ exports.approveRider = async (req, res, next) => {
       },
     });
 
+    sendRiderApprovedPush(rider.id);
     if (rider.phone) sendRiderApprovedSms(rider.phone);
 
     res.json({ success: true, message: 'Rider account approved', rider });
@@ -100,6 +105,7 @@ exports.rejectRider = async (req, res, next) => {
       },
     });
 
+    sendAccountRejectedPush(rider.id, reason);
     if (rider.phone) sendAccountRejectedSms(rider.phone, reason);
 
     res.json({ success: true, message: 'Rider rejected', rider });
@@ -132,6 +138,9 @@ exports.toggleSuspend = async (req, res, next) => {
         ? { vendorStatus: 'SUSPENDED', rejectedReason: reason || 'Account suspended' }
         : { vendorStatus: 'APPROVED', rejectedReason: null },
     });
+
+    if (suspending) sendAccountSuspendedPush(rider.id, reason);
+    else sendAccountReactivatedPush(rider.id);
 
     if (rider.phone) {
       if (suspending) sendAccountSuspendedSms(rider.phone, reason);
@@ -209,6 +218,9 @@ exports.toggleFreeze = async (req, res, next) => {
       data: { isFrozen },
       select: { id: true, name: true, phone: true, isFrozen: true },
     });
+
+    if (isFrozen) sendAccountFrozenPush(updated.id);
+    else sendAccountUnfrozenPush(updated.id);
 
     if (updated.phone) {
       if (isFrozen) sendAccountFrozenSms(updated.phone);

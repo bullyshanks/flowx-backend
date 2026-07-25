@@ -19,6 +19,8 @@ const subscriptionRoutes = require('./routes/subscription.routes');
 const adminRoutes = require('./routes/admin.routes');
 const financeRoutes = require('./routes/finance.routes');
 const kycRoutes = require('./routes/kyc.routes');
+const notificationsRoutes = require('./routes/notifications.routes');
+const customerRoutes = require('./routes/customer.routes');
 
 const app = express();
 
@@ -71,6 +73,8 @@ app.use('/api/subscriptions', subscriptionRoutes);
 app.use('/api/admin/finance', financeRoutes);
 app.use('/api/admin/kyc', kycRoutes);
 app.use('/api/admin', adminRoutes);
+app.use('/api/notifications', notificationsRoutes);
+app.use('/api/customer', customerRoutes);
 
 // ── 404 handler ──
 app.use((req, res) => {

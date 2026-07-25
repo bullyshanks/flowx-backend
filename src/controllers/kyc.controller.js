@@ -6,6 +6,7 @@
 
 const prisma = require('../config/prisma');
 const { sendKycApprovedSms, sendKycRejectedSms } = require('../services/sms.service');
+const { sendKycApprovedPush, sendKycRejectedPush } = require('../services/push.service');
 const {
   needsRider, tryAssignVendor, tryAssignRider, unassignVendorOrders, reassignRiderOrders,
 } = require('../services/assignment.service');
@@ -81,6 +82,7 @@ exports.approve = async (req, res, next) => {
       select: { id: true, name: true, phone: true, role: true, kycStatus: true, zoneId: true, vendorStatus: true },
     });
 
+    sendKycApprovedPush(user.id);
     if (user.phone) sendKycApprovedSms(user.phone);
 
     // KYC approval is the actual moment a vendor/rider becomes fully order-
@@ -143,6 +145,7 @@ exports.reject = async (req, res, next) => {
       select: { id: true, name: true, phone: true, role: true, kycStatus: true, rejectedReason: true },
     });
 
+    sendKycRejectedPush(user.id, reason);
     if (user.phone) sendKycRejectedSms(user.phone, reason);
 
     // KYC is a separate gate from vendorStatus (see updateStatus's kycStatus

@@ -6,7 +6,7 @@
 const bcrypt = require('bcryptjs');
 const prisma = require('../config/prisma');
 const { signToken } = require('../utils/jwt');
-const { generateOtp } = require('../utils/generators');
+const { generateOtp, generateReferralCode } = require('../utils/generators');
 const { sendOtpSms } = require('../services/sms.service');
 
 // A guest order never gets a customerId — it's just guestName/guestPhone on
@@ -22,6 +22,38 @@ async function backfillGuestOrders(phone, customerId) {
   });
 }
 
+// Every customer gets their own shareable code (retried on the astronomically
+// rare unique clash). If they signed up with a friend's code, link the
+// referral — PENDING until their first order is delivered, see
+// order.controller's DELIVERED handler for the actual crediting. Referral
+// failures must never block signup: invalid code, self-referral, an already-
+// referred phone re-registering — all just silently skipped, never an error.
+async function setupReferral(userId, referralCode) {
+  for (let attempt = 0; attempt < 5; attempt += 1) {
+    try {
+      await prisma.user.update({ where: { id: userId }, data: { referralCode: generateReferralCode() } });
+      break;
+    } catch (err) {
+      if (err.code !== 'P2002') throw err; // unique clash on referralCode — retry with a new one
+    }
+  }
+
+  if (!referralCode || !String(referralCode).trim()) return;
+  const code = String(referralCode).trim().toUpperCase();
+
+  const referrer = await prisma.user.findUnique({ where: { referralCode: code } });
+  if (!referrer || referrer.id === userId || referrer.role !== 'CUSTOMER') return;
+
+  try {
+    await prisma.$transaction([
+      prisma.user.update({ where: { id: userId }, data: { referredById: referrer.id } }),
+      prisma.referral.create({ data: { referrerId: referrer.id, refereeId: userId } }),
+    ]);
+  } catch (err) {
+    if (err.code !== 'P2002') throw err; // refereeId already has a referral row — ignore
+  }
+}
+
 const PK_PHONE_REGEX = /^(\+92|0)?3\d{9}$/;
 
 // ─────────────────────────────────────────────
@@ -29,7 +61,7 @@ const PK_PHONE_REGEX = /^(\+92|0)?3\d{9}$/;
 // ─────────────────────────────────────────────
 exports.registerCustomer = async (req, res, next) => {
   try {
-    const { name, phone, email, password, zoneId, defaultAddress } = req.body;
+    const { name, phone, email, password, zoneId, defaultAddress, referralCode } = req.body;
 
     if (!name || !phone) {
       return res.status(400).json({ success: false, message: 'Name and phone are required' });
@@ -54,6 +86,8 @@ exports.registerCustomer = async (req, res, next) => {
         isVerified: false,
       },
     });
+
+    await setupReferral(user.id, referralCode);
 
     // Send OTP for verification
     const code = generateOtp();
@@ -256,7 +290,7 @@ exports.sendOtp = async (req, res, next) => {
 // ─────────────────────────────────────────────
 exports.verifyOtp = async (req, res, next) => {
   try {
-    const { phone, code, purpose = 'login' } = req.body;
+    const { phone, code, purpose = 'login', referralCode } = req.body;
     if (!phone || !code) {
       return res.status(400).json({ success: false, message: 'Phone and code are required' });
     }
@@ -288,6 +322,7 @@ exports.verifyOtp = async (req, res, next) => {
       user = await prisma.user.create({
         data: { phone, name: 'FlowX User', role: 'CUSTOMER', isVerified: true },
       });
+      await setupReferral(user.id, referralCode);
     } else {
       user = await prisma.user.update({
         where: { id: user.id },

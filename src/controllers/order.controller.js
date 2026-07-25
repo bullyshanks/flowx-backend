@@ -9,7 +9,11 @@ const {
   sendOrderConfirmationSms, sendOrderAssignedSms,
   sendOrderOutForDeliverySms, sendOrderDeliveredSms, sendOrderCancelledSms,
 } = require('../services/sms.service');
-const { createDeliveryLedgerEntries } = require('../services/ledger.service');
+const {
+  sendOrderConfirmationPush, sendOrderAssignedPush,
+  sendOrderOutForDeliveryPush, sendOrderDeliveredPush, sendOrderCancelledPush,
+} = require('../services/push.service');
+const { createDeliveryLedgerEntries, round2 } = require('../services/ledger.service');
 const {
   needsRider, tryAssignVendor, tryAssignRider, reassignIfExpired, findNextVendor,
 } = require('../services/assignment.service');
@@ -118,7 +122,35 @@ exports.placeOrder = async (req, res, next) => {
       };
     });
 
-    const total = subtotal; // free delivery for now
+    // ─── Referral / wallet discount — logged-in customers only, one or the
+    // other, never both. A friend's referral code gets you Rs.50 off your
+    // very first order; walletBalance (earned by referring others) is spent
+    // on any later order. The referral side isn't credited to the referrer
+    // yet — that only happens once this order is actually DELIVERED (see
+    // updateStatus), same as vendor/rider ledger entries waiting for
+    // delivery rather than placement. ──
+    let discountAmount = 0;
+    let usedWalletBalance = false;
+    if (!isGuest) {
+      const customer = await prisma.user.findUnique({
+        where: { id: req.user.id },
+        select: { walletBalance: true, referredById: true },
+      });
+      const pendingReferral = customer.referredById
+        ? await prisma.referral.findUnique({ where: { refereeId: req.user.id } })
+        : null;
+      const isFirstOrder = pendingReferral?.status === 'PENDING'
+        && (await prisma.order.count({ where: { customerId: req.user.id } })) === 0;
+
+      if (isFirstOrder) {
+        discountAmount = round2(Math.min(Number(pendingReferral.refereeDiscount), subtotal));
+      } else if (Number(customer.walletBalance) > 0) {
+        discountAmount = round2(Math.min(Number(customer.walletBalance), subtotal));
+        usedWalletBalance = discountAmount > 0;
+      }
+    }
+
+    const total = subtotal - discountAmount; // free delivery for now
 
     // ─── Create order ──
     const trimmedAddress = String(deliveryAddress).trim();
@@ -136,6 +168,7 @@ exports.placeOrder = async (req, res, next) => {
         paymentMethod,
         fulfillmentType,
         subtotal,
+        discountAmount,
         total,
         status: 'PENDING',
         items: { create: orderItems },
@@ -144,13 +177,22 @@ exports.placeOrder = async (req, res, next) => {
       include: { items: { include: { product: true } }, zone: true },
     });
 
+    if (usedWalletBalance) {
+      await prisma.user.update({
+        where: { id: req.user.id },
+        data: { walletBalance: { decrement: discountAmount } },
+      });
+    }
+
     // ─── Offer to the first eligible vendor in the zone ──
     // Self-pickup orders still need a vendor to prepare/hold the order.
     await tryAssignVendor(order.id);
 
-    // ─── Send confirmation SMS ──
+    // ─── Send confirmation SMS + push (push only reaches logged-in customers —
+    // guests have no account/subscription to push to) ──
     const phone = isGuest ? guestPhone : req.user.phone;
     sendOrderConfirmationSms(phone, order.orderNumber);
+    if (!isGuest) sendOrderConfirmationPush(req.user.id, order.orderNumber);
 
     res.status(201).json({
       success: true,
@@ -158,6 +200,8 @@ exports.placeOrder = async (req, res, next) => {
       order: {
         id: order.id,
         orderNumber: order.orderNumber,
+        subtotal: order.subtotal,
+        discountAmount: order.discountAmount,
         total: order.total,
         status: order.status,
       },
@@ -318,6 +362,7 @@ exports.acceptOrder = async (req, res, next) => {
     }
 
     // Notify customer
+    if (order.customerId) sendOrderAssignedPush(order.customerId, order.orderNumber, req.user.name);
     const customerPhone = order.guestPhone || (await prisma.user.findUnique({ where: { id: order.customerId } }))?.phone;
     if (customerPhone) sendOrderAssignedSms(customerPhone, order.orderNumber, req.user.name);
 
@@ -504,9 +549,35 @@ exports.updateStatus = async (req, res, next) => {
     // Ledger entries are created once per order (service is idempotent)
     if (status === 'DELIVERED' && order.status !== 'DELIVERED') {
       await createDeliveryLedgerEntries(order.id);
+
+      // Referral bonus: credited to the referrer once the referee's first
+      // order actually completes, not at signup or checkout — avoids paying
+      // out on a referral whose first order gets cancelled. Referral.status
+      // only ever leaves PENDING once, so this is naturally idempotent
+      // against the same order (or a later one) re-triggering DELIVERED.
+      if (order.customerId) {
+        const referral = await prisma.referral.findUnique({ where: { refereeId: order.customerId } });
+        if (referral && referral.status === 'PENDING') {
+          await prisma.$transaction([
+            prisma.user.update({
+              where: { id: referral.referrerId },
+              data: { walletBalance: { increment: referral.referrerBonus } },
+            }),
+            prisma.referral.update({
+              where: { id: referral.id },
+              data: { status: 'CREDITED', creditedAt: new Date() },
+            }),
+          ]);
+        }
+      }
     }
 
     // Notify customer of the status change
+    if (order.customerId) {
+      if (status === 'OUT_FOR_DELIVERY') sendOrderOutForDeliveryPush(order.customerId, order.orderNumber);
+      else if (status === 'DELIVERED') sendOrderDeliveredPush(order.customerId, order.orderNumber);
+      else if (status === 'CANCELLED') sendOrderCancelledPush(order.customerId, order.orderNumber);
+    }
     const customerPhone = order.guestPhone
       || (order.customerId && (await prisma.user.findUnique({ where: { id: order.customerId } }))?.phone);
     if (customerPhone) {

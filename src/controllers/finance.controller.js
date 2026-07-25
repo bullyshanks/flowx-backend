@@ -11,6 +11,10 @@ const {
   sendRefundPaidSms, sendRefundRejectedSms, sendVendorSettlementPaidSms, sendRiderSettlementPaidSms,
   sendAccountFrozenSms, sendAccountUnfrozenSms,
 } = require('../services/sms.service');
+const {
+  sendRefundPaidPush, sendRefundRejectedPush, sendVendorSettlementPaidPush, sendRiderSettlementPaidPush,
+  sendAccountFrozenPush, sendAccountUnfrozenPush,
+} = require('../services/push.service');
 
 // Current week: Monday 00:00 → next Monday 00:00
 function currentWeekRange() {
@@ -370,6 +374,9 @@ exports.toggleFreeze = async (req, res, next) => {
       select: { id: true, name: true, phone: true, isFrozen: true },
     });
 
+    if (isFrozen) sendAccountFrozenPush(updated.id);
+    else sendAccountUnfrozenPush(updated.id);
+
     if (updated.phone) {
       if (isFrozen) sendAccountFrozenSms(updated.phone);
       else sendAccountUnfrozenSms(updated.phone);
@@ -531,6 +538,7 @@ exports.paySettlement = async (req, res, next) => {
     // A negative netPayable means the vendor owed FlowX (COD case), not a
     // payout — nothing to congratulate them on, so no SMS in that case.
     if (Number(settlement.netPayable) > 0) {
+      sendVendorSettlementPaidPush(settlement.vendorId, settlement.netPayable);
       const vendor = await prisma.user.findUnique({ where: { id: settlement.vendorId }, select: { phone: true } });
       if (vendor?.phone) sendVendorSettlementPaidSms(vendor.phone, settlement.netPayable);
     }
@@ -687,6 +695,7 @@ exports.payRiderSettlement = async (req, res, next) => {
     });
 
     if (Number(settlement.netPayable) > 0) {
+      sendRiderSettlementPaidPush(settlement.riderId, settlement.netPayable);
       const rider = await prisma.user.findUnique({ where: { id: settlement.riderId }, select: { phone: true } });
       if (rider?.phone) sendRiderSettlementPaidSms(rider.phone, settlement.netPayable);
     }
@@ -884,6 +893,7 @@ exports.rejectRefund = async (req, res, next) => {
       data: { status: 'REJECTED', rejectedReason: reason ? String(reason).trim() : null },
     });
 
+    if (refund.customerId) sendRefundRejectedPush(refund.customerId, refund.order.orderNumber, reason);
     const phone = refund.customer?.phone || refund.order.guestPhone;
     if (phone) sendRefundRejectedSms(phone, refund.order.orderNumber, reason);
 
@@ -944,6 +954,7 @@ exports.payRefund = async (req, res, next) => {
       });
     });
 
+    if (refund.customerId) sendRefundPaidPush(refund.customerId, refund.order.orderNumber, refund.amount);
     const phone = refund.customer?.phone || refund.order.guestPhone;
     if (phone) sendRefundPaidSms(phone, refund.order.orderNumber, refund.amount);
 

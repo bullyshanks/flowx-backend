@@ -98,6 +98,11 @@ enum RefundStatus {
   REJECTED
 }
 
+enum ReferralStatus {
+  PENDING // referee signed up, hasn't completed a first order yet
+  CREDITED // referee's first order delivered — referrer's bonus paid out
+}
+
 // ─── MODELS ─────────────────────────────────────────────────
 
 model User {
@@ -139,6 +144,17 @@ model User {
   vehicleDetails String?
   isOnline       Boolean @default(false) // online/offline toggle
 
+  // Referral (customer-specific — every customer gets a shareable code;
+  // referring a friend earns a wallet credit once the friend's first order
+  // is delivered, see Referral model). Nullable since vendors/riders/admin
+  // never get one, and existing customers are backfilled lazily on first
+  // touch rather than in a migration.
+  referralCode  String?  @unique
+  referredById  String?
+  referredBy    User?    @relation("Referrals", fields: [referredById], references: [id])
+  referrals     User[]   @relation("Referrals")
+  walletBalance Decimal  @default(0) @db.Decimal(10, 2) // customer credit from referrals, spent as a checkout discount
+
   // Relations
   orders             Order[]            @relation("CustomerOrders")
   assignedOrders     Order[]            @relation("VendorOrders")
@@ -151,6 +167,9 @@ model User {
   riderSettlements   RiderSettlement[]
   vendorProducts     VendorProduct[]
   refunds            Refund[]
+  pushSubscriptions  PushSubscription[]
+  referralsGiven     Referral[]         @relation("ReferralGiven")
+  referralReceived   Referral?          @relation("ReferralReceived")
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -261,9 +280,10 @@ model Order {
   riderAcceptDeadline DateTime? // now() + 60-120s, for the accept/reject timer
 
   // Pricing
-  subtotal    Decimal @db.Decimal(10, 2)
-  deliveryFee Decimal @default(0) @db.Decimal(10, 2)
-  total       Decimal @db.Decimal(10, 2)
+  subtotal       Decimal @db.Decimal(10, 2)
+  deliveryFee    Decimal @default(0) @db.Decimal(10, 2)
+  discountAmount Decimal @default(0) @db.Decimal(10, 2) // referral signup discount or wallet balance applied at checkout
+  total          Decimal @db.Decimal(10, 2)
 
   // Payment
   paymentMethod PaymentMethod
@@ -484,4 +504,39 @@ model Otp {
 
   @@index([phone, purpose])
   @@index([expiresAt])
+}
+
+// Web Push (VAPID) subscriptions — one row per browser/device a user has
+// granted notification permission on. No Firebase/third-party account
+// needed, same fire-and-forget shape as sms.service.js (see push.service.js).
+model PushSubscription {
+  id        String   @id @default(uuid())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  endpoint  String   @unique
+  p256dh    String
+  auth      String
+  createdAt DateTime @default(now())
+
+  @@index([userId])
+}
+
+// One row per successful referral signup. PENDING until the referee's first
+// order is delivered (mirrors vendor/rider ledger entries only crediting on
+// delivery, not placement — avoids paying out on a cancelled first order),
+// then CREDITED once the referrer's walletBalance bonus is applied.
+model Referral {
+  id              String         @id @default(uuid())
+  referrerId      String
+  referrer        User           @relation("ReferralGiven", fields: [referrerId], references: [id])
+  refereeId       String         @unique
+  referee         User           @relation("ReferralReceived", fields: [refereeId], references: [id])
+  referrerBonus   Decimal        @default(50) @db.Decimal(10, 2)
+  refereeDiscount Decimal        @default(50) @db.Decimal(10, 2)
+  status          ReferralStatus @default(PENDING)
+  createdAt       DateTime       @default(now())
+  creditedAt      DateTime?
+
+  @@index([referrerId])
+  @@index([status])
 }
