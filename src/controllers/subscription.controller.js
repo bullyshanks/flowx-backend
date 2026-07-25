@@ -1,5 +1,6 @@
 // ── Subscription management ──
 const prisma = require('../config/prisma');
+const { cancelUnfulfilledOrders } = require('../services/subscription.service');
 
 exports.create = async (req, res, next) => {
   try {
@@ -82,6 +83,7 @@ exports.cancel = async (req, res, next) => {
       where: { id: req.params.id, customerId: req.user.id },
       data: { status: 'CANCELLED', endDate: new Date() },
     });
+    await cancelUnfulfilledOrders(sub.id);
     res.json({ success: true, subscription: sub });
   } catch (err) {
     next(err);
@@ -140,6 +142,7 @@ exports.adminCancel = async (req, res, next) => {
       where: { id: req.params.id },
       data: { status: 'CANCELLED', endDate: new Date() },
     });
+    await cancelUnfulfilledOrders(sub.id);
     res.json({ success: true, subscription: sub });
   } catch (err) {
     if (err.code === 'P2025') return res.status(404).json({ success: false, message: 'Subscription not found' });

@@ -7,7 +7,7 @@
 
 const prisma = require('../config/prisma');
 const { generateOrderNumber } = require('../utils/generators');
-const { sendOrderConfirmationSms } = require('./sms.service');
+const { sendOrderConfirmationSms, sendOrderCancelledSms } = require('./sms.service');
 const { tryAssignVendor } = require('./assignment.service');
 
 function advance(date, frequency) {
@@ -108,4 +108,29 @@ async function processDueSubscriptions() {
   return results;
 }
 
-module.exports = { processDueSubscriptions, advance };
+// Cancelling a subscription otherwise leaves any order it already generated
+// to run its own course untouched — a customer who cancels right after that
+// cycle's order was created (a real timing window, since the sweep runs on
+// an interval) would still get charged/delivered for it. Cancel anything not
+// already DELIVERED/CANCELLED (both terminal, see order.controller.updateStatus)
+// along with the subscription itself.
+async function cancelUnfulfilledOrders(subscriptionId) {
+  const orders = await prisma.order.findMany({
+    where: { subscriptionId, status: { notIn: ['DELIVERED', 'CANCELLED'] } },
+    include: { customer: { select: { phone: true } } },
+  });
+  for (const order of orders) {
+    await prisma.order.update({
+      where: { id: order.id },
+      data: {
+        status: 'CANCELLED',
+        statusHistory: { create: { status: 'CANCELLED', notes: 'Subscription cancelled' } },
+      },
+    });
+    const phone = order.guestPhone || order.customer?.phone;
+    if (phone) sendOrderCancelledSms(phone, order.orderNumber);
+  }
+  return orders.length;
+}
+
+module.exports = { processDueSubscriptions, advance, cancelUnfulfilledOrders };
