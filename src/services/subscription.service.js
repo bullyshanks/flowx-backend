@@ -8,6 +8,7 @@
 const prisma = require('../config/prisma');
 const { generateOrderNumber } = require('../utils/generators');
 const { sendOrderConfirmationSms, sendOrderCancelledSms } = require('./sms.service');
+const { sendOrderConfirmationPush, sendOrderCancelledPush } = require('./push.service');
 const { tryAssignVendor } = require('./assignment.service');
 
 function advance(date, frequency) {
@@ -71,6 +72,7 @@ async function processSubscription(sub) {
   await tryAssignVendor(order.id);
 
   if (sub.customer?.phone) sendOrderConfirmationSms(sub.customer.phone, order.orderNumber);
+  if (sub.customerId) sendOrderConfirmationPush(sub.customerId, order.orderNumber);
 
   return order;
 }
@@ -129,6 +131,7 @@ async function cancelUnfulfilledOrders(subscriptionId) {
     });
     const phone = order.guestPhone || order.customer?.phone;
     if (phone) sendOrderCancelledSms(phone, order.orderNumber);
+    if (order.customerId) sendOrderCancelledPush(order.customerId, order.orderNumber);
   }
   return orders.length;
 }
