@@ -6,6 +6,7 @@
 
 const prisma = require('../config/prisma');
 const { sendKycApprovedSms, sendKycRejectedSms } = require('../services/sms.service');
+const { needsRider, tryAssignVendor, tryAssignRider } = require('../services/assignment.service');
 
 // ─────────────────────────────────────────────
 // Admin: list users with KYC pending review (optionally by role)
@@ -75,10 +76,38 @@ exports.approve = async (req, res, next) => {
     const user = await prisma.user.update({
       where: { id: existing.id },
       data: { kycStatus: 'APPROVED' },
-      select: { id: true, name: true, phone: true, role: true, kycStatus: true },
+      select: { id: true, name: true, phone: true, role: true, kycStatus: true, zoneId: true, vendorStatus: true },
     });
 
     if (user.phone) sendKycApprovedSms(user.phone);
+
+    // KYC approval is the actual moment a vendor/rider becomes fully order-
+    // eligible (vendorStatus alone isn't enough — see requireApprovedVendor/
+    // requireApprovedRider). Mirrors updateStorefront's and toggleOnline's
+    // sweep: orders that never got offered to anyone because no one was
+    // eligible in the zone yet otherwise sit stuck forever, since
+    // reassignIfExpired only re-checks offers that were made and expired.
+    if (user.vendorStatus === 'APPROVED' && user.zoneId) {
+      if (user.role === 'VENDOR') {
+        const orphaned = await prisma.order.findMany({
+          where: { zoneId: user.zoneId, status: 'PENDING', vendorId: null, offeredVendorId: null },
+          select: { id: true },
+        });
+        for (const order of orphaned) {
+          await tryAssignVendor(order.id);
+        }
+      } else if (user.role === 'RIDER') {
+        const orphaned = await prisma.order.findMany({
+          where: {
+            zoneId: user.zoneId, status: 'ASSIGNED', vendorId: { not: null }, riderId: null, fulfillmentType: 'DELIVERY',
+          },
+          include: { items: { include: { product: true } } },
+        });
+        for (const order of orphaned) {
+          if (needsRider(order)) await tryAssignRider(order.id);
+        }
+      }
+    }
 
     res.json({ success: true, message: 'KYC approved', user });
   } catch (err) {
