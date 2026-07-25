@@ -446,6 +446,18 @@ exports.updateStatus = async (req, res, next) => {
       return res.status(404).json({ success: false, message: 'Order not found' });
     }
 
+    // DELIVERED and CANCELLED are terminal — nothing changes the status of an
+    // order after that (no cancelling an order the customer already got, no
+    // un-cancelling, no bouncing between statuses). Ledger entries created on
+    // delivery aren't reversed by anything, so letting a delivered order flip
+    // to cancelled (or back) would desync order status from money already paid.
+    if (order.status === 'DELIVERED' || order.status === 'CANCELLED') {
+      return res.status(409).json({
+        success: false,
+        message: `Order is already ${order.status.toLowerCase()} — status cannot be changed`,
+      });
+    }
+
     // Vendor/rider can only update their own orders. Admin can update any.
     if (req.user.role === 'VENDOR' && order.vendorId !== req.user.id) {
       return res.status(403).json({ success: false, message: 'Not your order' });
