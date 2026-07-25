@@ -177,6 +177,14 @@ exports.trackOrder = async (req, res, next) => {
     const existing = await prisma.order.findUnique({ where: { orderNumber }, select: { id: true } });
     if (existing) await reassignIfExpired(existing.id);
 
+    // This endpoint is public and unauthenticated — order numbers are only a
+    // 5-digit random suffix (~90k possibilities/year, see generateOrderNumber),
+    // guessable/enumerable at scale. Keep the response to what a tracking page
+    // actually needs: no statusHistory (internal ops notes + raw changedBy
+    // user ids — unused by the frontend anyway, see track/page.tsx) and no
+    // vendor/rider phone numbers (real PII that would otherwise be harvestable
+    // by anyone willing to guess order numbers). Names alone are enough
+    // context ("your rider is Ali") without exposing a way to contact them.
     const order = await prisma.order.findUnique({
       where: { orderNumber },
       select: {
@@ -190,9 +198,8 @@ exports.trackOrder = async (req, res, next) => {
         items: {
           include: { product: { select: { name: true, unit: true, imageUrl: true } } },
         },
-        statusHistory: { orderBy: { createdAt: 'asc' } },
-        vendor: { select: { name: true, phone: true } },
-        rider: { select: { name: true, phone: true } },
+        vendor: { select: { name: true } },
+        rider: { select: { name: true } },
         // REJECTED refunds were never actually going to happen from the
         // customer's perspective (they never requested one) — showing that
         // would just confuse, not inform, so it's excluded here.
