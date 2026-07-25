@@ -777,6 +777,19 @@ exports.createRefund = async (req, res, next) => {
         message: `Cannot refund an order with status ${order.status} — must be DELIVERED or CANCELLED`,
       });
     }
+    // COD cash is only ever collected at delivery (see createDeliveryLedgerEntries,
+    // which only fires on the DELIVERED transition) — DELIVERED and CANCELLED are
+    // mutually exclusive terminal states, so a CANCELLED COD order is guaranteed
+    // to have never had any cash collected. Nothing to refund. Prepaid methods
+    // (JAZZCASH/EASYPAISA/BANK_TRANSFER/CARD) don't have this guarantee since
+    // there's no gateway integration to confirm collection either way — that
+    // stays a judgment call for the admin.
+    if (order.paymentMethod === 'COD' && order.status === 'CANCELLED') {
+      return res.status(409).json({
+        success: false,
+        message: 'Cannot refund a cancelled COD order — no cash was ever collected',
+      });
+    }
 
     const value = Number(amount);
     if (Number.isNaN(value) || value <= 0) {
