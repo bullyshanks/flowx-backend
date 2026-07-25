@@ -14,6 +14,10 @@ const {
   needsRider, tryAssignVendor, tryAssignRider, reassignIfExpired, findNextVendor,
 } = require('../services/assignment.service');
 
+// Mirrors the frontend's validatePhone (src/lib/utils.ts) so guest orders
+// placed directly against the API get the same check the cart UI enforces.
+const PK_PHONE_REGEX = /^(\+92|0)?3\d{9}$/;
+
 // ─────────────────────────────────────────────
 // Place an order (guest or authenticated)
 // ─────────────────────────────────────────────
@@ -38,7 +42,7 @@ exports.placeOrder = async (req, res, next) => {
     if (!items.every((i) => Number.isInteger(i.quantity) && i.quantity > 0)) {
       return res.status(400).json({ success: false, message: 'Each item requires a valid positive quantity' });
     }
-    if (!zoneId || !deliveryAddress || !paymentMethod) {
+    if (!zoneId || !deliveryAddress || !String(deliveryAddress).trim() || !paymentMethod) {
       return res.status(400).json({ success: false, message: 'Zone, address, and payment method required' });
     }
     if (!['COD', 'JAZZCASH', 'EASYPAISA', 'BANK_TRANSFER', 'CARD'].includes(paymentMethod)) {
@@ -49,8 +53,13 @@ exports.placeOrder = async (req, res, next) => {
     }
 
     const isGuest = !req.user;
-    if (isGuest && (!guestName || !guestPhone)) {
-      return res.status(400).json({ success: false, message: 'Guest name and phone required' });
+    if (isGuest) {
+      if (!guestName || !String(guestName).trim()) {
+        return res.status(400).json({ success: false, message: 'Guest name is required' });
+      }
+      if (!guestPhone || !PK_PHONE_REGEX.test(String(guestPhone).replace(/\s|-/g, ''))) {
+        return res.status(400).json({ success: false, message: 'A valid Pakistani phone number is required' });
+      }
     }
 
     // ─── Verify zone exists ──
@@ -112,15 +121,16 @@ exports.placeOrder = async (req, res, next) => {
     const total = subtotal; // free delivery for now
 
     // ─── Create order ──
+    const trimmedAddress = String(deliveryAddress).trim();
     const order = await prisma.order.create({
       data: {
         orderNumber: generateOrderNumber(),
         customerId: isGuest ? null : req.user.id,
-        guestName: isGuest ? guestName : null,
-        guestPhone: isGuest ? guestPhone : null,
-        guestAddress: isGuest ? deliveryAddress : null,
+        guestName: isGuest ? String(guestName).trim() : null,
+        guestPhone: isGuest ? String(guestPhone).trim() : null,
+        guestAddress: isGuest ? trimmedAddress : null,
         zoneId,
-        deliveryAddress,
+        deliveryAddress: trimmedAddress,
         deliveryDate: deliveryDate ? new Date(deliveryDate) : null,
         deliveryTimeSlot,
         paymentMethod,
