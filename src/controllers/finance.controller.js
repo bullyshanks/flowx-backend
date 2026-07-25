@@ -6,6 +6,7 @@
 
 const prisma = require('../config/prisma');
 const { getVendorWalletSummary, getRiderWalletSummary, round2 } = require('../services/ledger.service');
+const { unassignVendorOrders } = require('../services/assignment.service');
 const {
   sendRefundPaidSms, sendVendorSettlementPaidSms, sendRiderSettlementPaidSms,
   sendAccountFrozenSms, sendAccountUnfrozenSms,
@@ -373,6 +374,11 @@ exports.toggleFreeze = async (req, res, next) => {
       if (isFrozen) sendAccountFrozenSms(updated.phone);
       else sendAccountUnfrozenSms(updated.phone);
     }
+
+    // Financial hold and delivery capability are separate concerns — a frozen
+    // vendor shouldn't be able to hold a customer's order hostage. Mirrors
+    // vendor.controller.toggleSuspend.
+    if (isFrozen) await unassignVendorOrders(updated.id, 'frozen');
 
     res.json({ success: true, vendor: updated });
   } catch (err) {

@@ -215,6 +215,11 @@ exports.toggleFreeze = async (req, res, next) => {
       else sendAccountUnfrozenSms(updated.phone);
     }
 
+    // Financial hold and delivery capability are separate concerns — a frozen
+    // rider shouldn't be able to hold a customer's order hostage. Mirrors
+    // toggleSuspend above.
+    if (isFrozen) await reassignRiderOrders(updated.id, 'frozen');
+
     res.json({ success: true, rider: updated });
   } catch (err) {
     next(err);
