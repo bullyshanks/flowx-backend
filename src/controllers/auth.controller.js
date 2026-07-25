@@ -9,6 +9,19 @@ const { signToken } = require('../utils/jwt');
 const { generateOtp } = require('../utils/generators');
 const { sendOtpSms } = require('../services/sms.service');
 
+// A guest order never gets a customerId — it's just guestName/guestPhone on
+// the order row, no User involved. If that same person later registers or
+// logs in with the same phone, their past guest orders would otherwise stay
+// permanently invisible in their own order history (myOrders only matches
+// customerId). Link them in, matching the shape of an order placed while
+// logged in (guest fields cleared, deliveryAddress is already authoritative).
+async function backfillGuestOrders(phone, customerId) {
+  await prisma.order.updateMany({
+    where: { customerId: null, guestPhone: phone },
+    data: { customerId, guestName: null, guestPhone: null, guestAddress: null },
+  });
+}
+
 const PK_PHONE_REGEX = /^(\+92|0)?3\d{9}$/;
 
 // ─────────────────────────────────────────────
@@ -282,6 +295,8 @@ exports.verifyOtp = async (req, res, next) => {
       });
     }
 
+    if (user.role === 'CUSTOMER') await backfillGuestOrders(phone, user.id);
+
     const token = signToken({ id: user.id, role: user.role });
 
     res.json({
@@ -332,6 +347,8 @@ exports.login = async (req, res, next) => {
         return res.status(403).json({ success: false, message });
       }
     }
+
+    if (user.role === 'CUSTOMER') await backfillGuestOrders(user.phone, user.id);
 
     const token = signToken({ id: user.id, role: user.role });
 
