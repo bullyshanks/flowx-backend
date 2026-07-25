@@ -42,7 +42,7 @@ const PRODUCTS = [
     price: 300,
     unit: 'set of 6',
     minQuantity: 1,
-    riderEarningPerUnit: 10,
+    riderEarningPerUnit: 60, // Rs. 10/bottle x 6 bottles
     hasRiderDelivery: true,
   },
   {
@@ -52,7 +52,7 @@ const PRODUCTS = [
     price: 480,
     unit: 'set of 12',
     minQuantity: 1,
-    riderEarningPerUnit: 5,
+    riderEarningPerUnit: 60, // Rs. 5/bottle x 12 bottles
     hasRiderDelivery: true,
   },
   {
