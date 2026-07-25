@@ -46,12 +46,24 @@ exports.listRiders = async (req, res, next) => {
 // ─────────────────────────────────────────────
 exports.approveRider = async (req, res, next) => {
   try {
+    const existing = await prisma.user.findFirst({ where: { id: req.params.id, role: 'RIDER' } });
+    if (!existing) {
+      return res.status(404).json({ success: false, message: 'Rider not found' });
+    }
+    if (existing.vendorStatus !== 'PENDING') {
+      return res.status(409).json({
+        success: false,
+        message: `Cannot approve a rider with status ${existing.vendorStatus}`,
+      });
+    }
+
     const rider = await prisma.user.update({
-      where: { id: req.params.id, role: 'RIDER' },
+      where: { id: existing.id },
       data: {
         vendorStatus: 'APPROVED',
         approvedAt: new Date(),
         isVerified: true,
+        rejectedReason: null,
       },
     });
 
