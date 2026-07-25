@@ -1,6 +1,17 @@
 // ── Subscription management ──
 const prisma = require('../config/prisma');
-const { cancelUnfulfilledOrders } = require('../services/subscription.service');
+const { cancelUnfulfilledOrders, advance } = require('../services/subscription.service');
+
+// Pausing never advances nextDeliveryDate (the sweep just skips non-ACTIVE
+// subscriptions), so after a lapsed pause it's stale in the past. The sweep's
+// advance() only steps one cycle at a time, so left as-is this would generate
+// one catch-up order per sweep tick until the backlog clears — a customer
+// resuming after a multi-day pause would get flooded with several real
+// orders within the hour instead of just their next delivery. Fast-forward
+// to the next cycle from now instead of replaying every missed one.
+function resumeDeliveryDate(sub) {
+  return sub.nextDeliveryDate <= new Date() ? advance(new Date(), sub.frequency) : sub.nextDeliveryDate;
+}
 
 exports.create = async (req, res, next) => {
   try {
@@ -67,9 +78,15 @@ exports.pause = async (req, res, next) => {
 
 exports.resume = async (req, res, next) => {
   try {
-    const sub = await prisma.subscription.update({
+    const existing = await prisma.subscription.findFirst({
       where: { id: req.params.id, customerId: req.user.id },
-      data: { status: 'ACTIVE' },
+    });
+    if (!existing) {
+      return res.status(404).json({ success: false, message: 'Subscription not found' });
+    }
+    const sub = await prisma.subscription.update({
+      where: { id: existing.id },
+      data: { status: 'ACTIVE', nextDeliveryDate: resumeDeliveryDate(existing) },
     });
     res.json({ success: true, subscription: sub });
   } catch (err) {
@@ -125,13 +142,16 @@ exports.adminPause = async (req, res, next) => {
 
 exports.adminResume = async (req, res, next) => {
   try {
+    const existing = await prisma.subscription.findUnique({ where: { id: req.params.id } });
+    if (!existing) {
+      return res.status(404).json({ success: false, message: 'Subscription not found' });
+    }
     const sub = await prisma.subscription.update({
-      where: { id: req.params.id },
-      data: { status: 'ACTIVE' },
+      where: { id: existing.id },
+      data: { status: 'ACTIVE', nextDeliveryDate: resumeDeliveryDate(existing) },
     });
     res.json({ success: true, subscription: sub });
   } catch (err) {
-    if (err.code === 'P2025') return res.status(404).json({ success: false, message: 'Subscription not found' });
     next(err);
   }
 };
