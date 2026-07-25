@@ -5,6 +5,7 @@
 // ═══════════════════════════════════════════════════════════
 
 const prisma = require('../config/prisma');
+const { sendKycApprovedSms, sendKycRejectedSms } = require('../services/sms.service');
 
 // ─────────────────────────────────────────────
 // Admin: list users with KYC pending review (optionally by role)
@@ -58,11 +59,27 @@ exports.getSubmission = async (req, res, next) => {
 // ─────────────────────────────────────────────
 exports.approve = async (req, res, next) => {
   try {
-    const user = await prisma.user.update({
-      where: { id: req.params.id },
-      data: { kycStatus: 'APPROVED' },
-      select: { id: true, name: true, role: true, kycStatus: true },
+    const existing = await prisma.user.findFirst({
+      where: { id: req.params.id, role: { in: ['VENDOR', 'RIDER'] } },
     });
+    if (!existing) {
+      return res.status(404).json({ success: false, message: 'User not found' });
+    }
+    if (existing.kycStatus !== 'PENDING') {
+      return res.status(409).json({
+        success: false,
+        message: `Cannot approve KYC with status ${existing.kycStatus}`,
+      });
+    }
+
+    const user = await prisma.user.update({
+      where: { id: existing.id },
+      data: { kycStatus: 'APPROVED' },
+      select: { id: true, name: true, phone: true, role: true, kycStatus: true },
+    });
+
+    if (user.phone) sendKycApprovedSms(user.phone);
+
     res.json({ success: true, message: 'KYC approved', user });
   } catch (err) {
     next(err);
@@ -75,12 +92,28 @@ exports.approve = async (req, res, next) => {
 // ─────────────────────────────────────────────
 exports.reject = async (req, res, next) => {
   try {
+    const existing = await prisma.user.findFirst({
+      where: { id: req.params.id, role: { in: ['VENDOR', 'RIDER'] } },
+    });
+    if (!existing) {
+      return res.status(404).json({ success: false, message: 'User not found' });
+    }
+    if (existing.kycStatus !== 'PENDING') {
+      return res.status(409).json({
+        success: false,
+        message: `Cannot reject KYC with status ${existing.kycStatus}`,
+      });
+    }
+
     const { reason } = req.body;
     const user = await prisma.user.update({
-      where: { id: req.params.id },
+      where: { id: existing.id },
       data: { kycStatus: 'REJECTED', rejectedReason: reason || 'KYC documents rejected' },
-      select: { id: true, name: true, role: true, kycStatus: true, rejectedReason: true },
+      select: { id: true, name: true, phone: true, role: true, kycStatus: true, rejectedReason: true },
     });
+
+    if (user.phone) sendKycRejectedSms(user.phone, reason);
+
     res.json({ success: true, message: 'KYC rejected', user });
   } catch (err) {
     next(err);

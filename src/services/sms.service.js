@@ -143,6 +143,19 @@ const sendAccountRejectedSms = (phone, reason) =>
     `FlowX: Your application was not approved${reason ? ` — ${reason}` : ''}. Contact us on WhatsApp at +92 315 8374442 if you have questions.`
   );
 
+// Shared across vendor and rider — KYC is one identity-verification gate for both.
+const sendKycApprovedSms = (phone) =>
+  sendSms(
+    phone,
+    `FlowX: Your identity verification (KYC) is approved.`
+  );
+
+const sendKycRejectedSms = (phone, reason) =>
+  sendSms(
+    phone,
+    `FlowX: Your identity verification (KYC) was not approved${reason ? ` — ${reason}` : ''}. Please re-upload your documents. Contact us on WhatsApp at +92 315 8374442 if you have questions.`
+  );
+
 module.exports = {
   sendSms,
   sendOtpSms,
@@ -161,4 +174,6 @@ module.exports = {
   sendAccountSuspendedSms,
   sendAccountReactivatedSms,
   sendAccountRejectedSms,
+  sendKycApprovedSms,
+  sendKycRejectedSms,
 };
