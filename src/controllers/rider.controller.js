@@ -80,9 +80,20 @@ exports.approveRider = async (req, res, next) => {
 // ─────────────────────────────────────────────
 exports.rejectRider = async (req, res, next) => {
   try {
+    const existing = await prisma.user.findFirst({ where: { id: req.params.id, role: 'RIDER' } });
+    if (!existing) {
+      return res.status(404).json({ success: false, message: 'Rider not found' });
+    }
+    if (existing.vendorStatus !== 'PENDING') {
+      return res.status(409).json({
+        success: false,
+        message: `Cannot reject a rider with status ${existing.vendorStatus}`,
+      });
+    }
+
     const { reason } = req.body;
     const rider = await prisma.user.update({
-      where: { id: req.params.id, role: 'RIDER' },
+      where: { id: existing.id },
       data: {
         vendorStatus: 'REJECTED',
         rejectedReason: reason || 'Application rejected',
