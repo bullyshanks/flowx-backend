@@ -6,7 +6,9 @@
 
 const prisma = require('../config/prisma');
 const { sendKycApprovedSms, sendKycRejectedSms } = require('../services/sms.service');
-const { needsRider, tryAssignVendor, tryAssignRider } = require('../services/assignment.service');
+const {
+  needsRider, tryAssignVendor, tryAssignRider, unassignVendorOrders, reassignRiderOrders,
+} = require('../services/assignment.service');
 
 // ─────────────────────────────────────────────
 // Admin: list users with KYC pending review (optionally by role)
@@ -142,6 +144,14 @@ exports.reject = async (req, res, next) => {
     });
 
     if (user.phone) sendKycRejectedSms(user.phone, reason);
+
+    // KYC is a separate gate from vendorStatus (see updateStatus's kycStatus
+    // check) — a re-submission can flip an already-approved, actively-
+    // operating account's KYC back to PENDING/REJECTED without touching
+    // vendorStatus, so their in-flight orders need the same flag/reassign
+    // treatment as suspend/freeze.
+    if (user.role === 'VENDOR') await unassignVendorOrders(user.id, 'KYC rejected');
+    else if (user.role === 'RIDER') await reassignRiderOrders(user.id, 'KYC rejected');
 
     res.json({ success: true, message: 'KYC rejected', user });
   } catch (err) {

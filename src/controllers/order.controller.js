@@ -462,6 +462,14 @@ exports.updateStatus = async (req, res, next) => {
     if ((req.user.role === 'VENDOR' || req.user.role === 'RIDER') && req.user.vendorStatus !== 'APPROVED') {
       return res.status(403).json({ success: false, message: 'Account suspended — contact FlowX admin' });
     }
+    // KYC is a separate gate from vendorStatus — a re-submission can flip an
+    // already-approved account's kycStatus back to PENDING/REJECTED without
+    // touching vendorStatus, so this needs its own check alongside the one
+    // above (otherwise a KYC-rejected vendor/rider can still finish an order
+    // already in hand and earn ledger credit for it).
+    if ((req.user.role === 'VENDOR' || req.user.role === 'RIDER') && req.user.kycStatus !== 'APPROVED') {
+      return res.status(403).json({ success: false, message: 'KYC not approved — contact FlowX admin' });
+    }
 
     const updateData = {
       status,
