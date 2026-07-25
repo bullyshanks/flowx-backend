@@ -9,6 +9,8 @@ const { signToken } = require('../utils/jwt');
 const { generateOtp } = require('../utils/generators');
 const { sendOtpSms } = require('../services/sms.service');
 
+const PK_PHONE_REGEX = /^(\+92|0)?3\d{9}$/;
+
 // ─────────────────────────────────────────────
 // Register a customer (with optional password)
 // ─────────────────────────────────────────────
@@ -69,8 +71,14 @@ exports.registerVendor = async (req, res, next) => {
   try {
     const { name, phone, cnic, password, zoneId } = req.body;
 
-    if (!name || !phone || !password || !zoneId) {
+    if (!name || !String(name).trim() || !phone || !password || !zoneId) {
       return res.status(400).json({ success: false, message: 'Name, phone, password, and zone are required' });
+    }
+    if (!PK_PHONE_REGEX.test(String(phone).replace(/\s|-/g, ''))) {
+      return res.status(400).json({ success: false, message: 'A valid Pakistani phone number is required' });
+    }
+    if (String(password).length < 6) {
+      return res.status(400).json({ success: false, message: 'Password must be at least 6 characters' });
     }
 
     const existing = await prisma.user.findUnique({ where: { phone } });
@@ -87,7 +95,7 @@ exports.registerVendor = async (req, res, next) => {
 
     const vendor = await prisma.user.create({
       data: {
-        name,
+        name: String(name).trim(),
         phone,
         password: hashedPassword,
         cnic,
@@ -118,8 +126,14 @@ exports.registerRider = async (req, res, next) => {
   try {
     const { name, phone, password, vehicleDetails, zoneId } = req.body;
 
-    if (!name || !phone || !password || !zoneId) {
+    if (!name || !String(name).trim() || !phone || !password || !zoneId) {
       return res.status(400).json({ success: false, message: 'Name, phone, password, and zone are required' });
+    }
+    if (!PK_PHONE_REGEX.test(String(phone).replace(/\s|-/g, ''))) {
+      return res.status(400).json({ success: false, message: 'A valid Pakistani phone number is required' });
+    }
+    if (String(password).length < 6) {
+      return res.status(400).json({ success: false, message: 'Password must be at least 6 characters' });
     }
 
     const existing = await prisma.user.findUnique({ where: { phone } });
@@ -136,7 +150,7 @@ exports.registerRider = async (req, res, next) => {
 
     const rider = await prisma.user.create({
       data: {
-        name,
+        name: String(name).trim(),
         phone,
         password: hashedPassword,
         vehicleDetails,
