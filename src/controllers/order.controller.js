@@ -456,6 +456,12 @@ exports.updateStatus = async (req, res, next) => {
     if ((req.user.role === 'VENDOR' || req.user.role === 'RIDER') && req.user.isFrozen) {
       return res.status(403).json({ success: false, message: 'Account frozen — contact FlowX admin' });
     }
+    // Suspension must block status changes on orders already in hand too, not
+    // just new offers/accepts — otherwise a suspended vendor/rider can still
+    // finish a delivery already assigned to them (and earn ledger credit for it).
+    if ((req.user.role === 'VENDOR' || req.user.role === 'RIDER') && req.user.vendorStatus !== 'APPROVED') {
+      return res.status(403).json({ success: false, message: 'Account suspended — contact FlowX admin' });
+    }
 
     const updateData = {
       status,

@@ -132,6 +132,56 @@ async function reassignIfExpired(orderId) {
   return order;
 }
 
+// Called when a vendor is suspended mid-order. Their in-flight orders
+// (already accepted, not yet delivered/cancelled) can't just sit pointed at
+// a suspended account forever — clear the assignment and log why, so the
+// order shows up as "Unassigned" in the admin orders table and the existing
+// Assign-vendor action picks it up. Not auto-reassigned to a random vendor —
+// they may have already prepared/packed the order, so this is an admin call.
+async function unassignVendorOrders(vendorId) {
+  const orders = await prisma.order.findMany({
+    where: { vendorId, status: { in: ['ASSIGNED', 'OUT_FOR_DELIVERY'] } },
+    select: { id: true, status: true },
+  });
+  for (const order of orders) {
+    await prisma.order.update({
+      where: { id: order.id },
+      data: { vendorId: null, assignedAt: null },
+    });
+    await prisma.orderStatusLog.create({
+      data: {
+        orderId: order.id,
+        status: order.status,
+        notes: 'Vendor suspended — order flagged for admin reassignment',
+      },
+    });
+  }
+  return orders.length;
+}
+
+// Called when a rider is suspended mid-delivery. Unlike a vendor (who may
+// have already prepared physical goods), a rider's leg can be handed to
+// another eligible rider in the same zone automatically — reuses the same
+// offer/accept path as an expired offer. Falls back to "Unassigned" (visible
+// in the admin orders table) if no other rider is available right now.
+async function reassignRiderOrders(riderId) {
+  const orders = await prisma.order.findMany({
+    where: { riderId, status: { in: ['ASSIGNED', 'OUT_FOR_DELIVERY'] } },
+    select: { id: true, status: true },
+  });
+  for (const order of orders) {
+    await prisma.orderStatusLog.create({
+      data: {
+        orderId: order.id,
+        status: order.status,
+        notes: 'Rider suspended — order flagged for admin reassignment',
+      },
+    });
+    await tryAssignRider(order.id, riderId);
+  }
+  return orders.length;
+}
+
 module.exports = {
   ACCEPT_WINDOW_SECONDS,
   needsRider,
@@ -141,4 +191,6 @@ module.exports = {
   tryAssignRider,
   reassignIfExpired,
   acceptDeadline,
+  unassignVendorOrders,
+  reassignRiderOrders,
 };
