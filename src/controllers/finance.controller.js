@@ -708,15 +708,26 @@ exports.payRiderSettlement = async (req, res, next) => {
 // ─────────────────────────────────────────────
 
 // What a vendor/rider actually received for this order — the ceiling on
-// what can be clawed back from each of them.
+// what can be clawed back from each of them. Must subtract clawbacks already
+// reserved/taken by other refunds on the same order (APPROVED reserves the
+// amount, PAID has already moved it), or approving multiple refunds on one
+// order lets each claw back the full original amount independently.
 async function orderClawbackCeilings(orderId) {
-  const [vendorEntries, riderEntries] = await Promise.all([
+  const [vendorEntries, riderEntries, otherRefunds] = await Promise.all([
     prisma.ledgerEntry.findMany({ where: { orderId, type: 'PRODUCT_VALUE' } }),
     prisma.riderLedgerEntry.findMany({ where: { orderId, type: 'RIDER_EARNING' } }),
+    prisma.refund.findMany({
+      where: { orderId, status: { in: ['APPROVED', 'PAID'] } },
+      select: { vendorClawbackAmount: true, riderClawbackAmount: true },
+    }),
   ]);
+  const vendorEarned = vendorEntries.reduce((acc, e) => acc + Number(e.amount), 0);
+  const riderEarned = riderEntries.reduce((acc, e) => acc + Number(e.amount), 0);
+  const vendorReserved = otherRefunds.reduce((acc, r) => acc + Number(r.vendorClawbackAmount || 0), 0);
+  const riderReserved = otherRefunds.reduce((acc, r) => acc + Number(r.riderClawbackAmount || 0), 0);
   return {
-    vendorCeiling: round2(vendorEntries.reduce((acc, e) => acc + Number(e.amount), 0)),
-    riderCeiling: round2(riderEntries.reduce((acc, e) => acc + Number(e.amount), 0)),
+    vendorCeiling: Math.max(0, round2(vendorEarned - vendorReserved)),
+    riderCeiling: Math.max(0, round2(riderEarned - riderReserved)),
   };
 }
 
@@ -757,13 +768,34 @@ exports.createRefund = async (req, res, next) => {
     if (!order) {
       return res.status(404).json({ success: false, message: 'Order not found' });
     }
+    // Nothing to refund until money has actually been collected (DELIVERED)
+    // or the order is CANCELLED (a prepaid order that never got fulfilled).
+    // Anything still in progress has no confirmed payment to refund yet.
+    if (order.status !== 'DELIVERED' && order.status !== 'CANCELLED') {
+      return res.status(409).json({
+        success: false,
+        message: `Cannot refund an order with status ${order.status} — must be DELIVERED or CANCELLED`,
+      });
+    }
 
     const value = Number(amount);
     if (Number.isNaN(value) || value <= 0) {
       return res.status(400).json({ success: false, message: 'amount must be a number > 0' });
     }
-    if (value > Number(order.total)) {
-      return res.status(400).json({ success: false, message: `amount cannot exceed the order total (${order.total})` });
+
+    // Cap against the order's remaining refundable balance, not just its
+    // total — otherwise multiple refunds can each go up to the full total.
+    const existingRefunds = await prisma.refund.findMany({
+      where: { orderId: order.id, status: { in: ['PENDING', 'APPROVED', 'PAID'] } },
+      select: { amount: true },
+    });
+    const alreadyRequested = existingRefunds.reduce((acc, r) => acc + Number(r.amount), 0);
+    const remaining = round2(Number(order.total) - alreadyRequested);
+    if (value > remaining) {
+      return res.status(400).json({
+        success: false,
+        message: `amount cannot exceed the remaining refundable balance (Rs. ${remaining})`,
+      });
     }
 
     const refund = await prisma.refund.create({
