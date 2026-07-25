@@ -116,7 +116,7 @@ const sendRiderSettlementPaidSms = (phone, amount) =>
 const sendAccountFrozenSms = (phone) =>
   sendSms(
     phone,
-    `FlowX: Your account has been frozen and cannot accept new orders. Contact us on WhatsApp at +92 315 8374442 to resolve this.`
+    `FlowX: Your account has been frozen. You cannot accept new orders, and any order currently assigned to you has been reassigned. Contact us on WhatsApp at +92 315 8374442 to resolve this.`
   );
 
 const sendAccountUnfrozenSms = (phone) =>
