@@ -77,9 +77,20 @@ exports.approveVendor = async (req, res, next) => {
 // ─────────────────────────────────────────────
 exports.rejectVendor = async (req, res, next) => {
   try {
+    const existing = await prisma.user.findFirst({ where: { id: req.params.id, role: 'VENDOR' } });
+    if (!existing) {
+      return res.status(404).json({ success: false, message: 'Vendor not found' });
+    }
+    if (existing.vendorStatus !== 'PENDING') {
+      return res.status(409).json({
+        success: false,
+        message: `Cannot reject a vendor with status ${existing.vendorStatus}`,
+      });
+    }
+
     const { reason } = req.body;
     const vendor = await prisma.user.update({
-      where: { id: req.params.id, role: 'VENDOR' },
+      where: { id: existing.id },
       data: {
         vendorStatus: 'REJECTED',
         rejectedReason: reason || 'Application rejected',
