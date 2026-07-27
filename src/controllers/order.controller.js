@@ -128,61 +128,77 @@ exports.placeOrder = async (req, res, next) => {
     // on any later order. The referral side isn't credited to the referrer
     // yet — that only happens once this order is actually DELIVERED (see
     // updateStatus), same as vendor/rider ledger entries waiting for
-    // delivery rather than placement. ──
-    let discountAmount = 0;
-    let usedWalletBalance = false;
-    if (!isGuest) {
-      const customer = await prisma.user.findUnique({
-        where: { id: req.user.id },
-        select: { walletBalance: true, referredById: true },
-      });
-      const pendingReferral = customer.referredById
-        ? await prisma.referral.findUnique({ where: { refereeId: req.user.id } })
-        : null;
-      const isFirstOrder = pendingReferral?.status === 'PENDING'
-        && (await prisma.order.count({ where: { customerId: req.user.id } })) === 0;
-
-      if (isFirstOrder) {
-        discountAmount = round2(Math.min(Number(pendingReferral.refereeDiscount), subtotal));
-      } else if (Number(customer.walletBalance) > 0) {
-        discountAmount = round2(Math.min(Number(customer.walletBalance), subtotal));
-        usedWalletBalance = discountAmount > 0;
-      }
-    }
-
-    const total = subtotal - discountAmount; // free delivery for now
-
-    // ─── Create order ──
+    // delivery rather than placement.
+    //
+    // Eligibility (referral.discountUsed) and order creation happen inside
+    // one transaction, and the claim itself is a compare-and-swap — the
+    // UPDATE's WHERE requires discountUsed to still be false, so a
+    // concurrent double-submit racing on the same referral can only ever
+    // have one branch see count === 1; the loser falls through with no
+    // discount instead of both applying it. Same pattern as the
+    // subscription-claiming CAS in subscription.service.js. Wallet spend
+    // gets the same treatment via a balance-guarded decrement. ──
     const trimmedAddress = String(deliveryAddress).trim();
-    const order = await prisma.order.create({
-      data: {
-        orderNumber: generateOrderNumber(),
-        customerId: isGuest ? null : req.user.id,
-        guestName: isGuest ? String(guestName).trim() : null,
-        guestPhone: isGuest ? String(guestPhone).trim() : null,
-        guestAddress: isGuest ? trimmedAddress : null,
-        zoneId,
-        deliveryAddress: trimmedAddress,
-        deliveryDate: deliveryDate ? new Date(deliveryDate) : null,
-        deliveryTimeSlot,
-        paymentMethod,
-        fulfillmentType,
-        subtotal,
-        discountAmount,
-        total,
-        status: 'PENDING',
-        items: { create: orderItems },
-        statusHistory: { create: [{ status: 'PENDING', notes: 'Order placed' }] },
-      },
-      include: { items: { include: { product: true } }, zone: true },
-    });
 
-    if (usedWalletBalance) {
-      await prisma.user.update({
-        where: { id: req.user.id },
-        data: { walletBalance: { decrement: discountAmount } },
+    const order = await prisma.$transaction(async (tx) => {
+      let discountAmount = 0;
+
+      if (!isGuest) {
+        const customer = await tx.user.findUnique({
+          where: { id: req.user.id },
+          select: { walletBalance: true, referredById: true },
+        });
+        const pendingReferral = customer.referredById
+          ? await tx.referral.findUnique({ where: { refereeId: req.user.id } })
+          : null;
+
+        if (pendingReferral && pendingReferral.status === 'PENDING' && !pendingReferral.discountUsed) {
+          const claim = await tx.referral.updateMany({
+            where: { id: pendingReferral.id, discountUsed: false },
+            data: { discountUsed: true },
+          });
+          if (claim.count === 1) {
+            discountAmount = round2(Math.min(Number(pendingReferral.refereeDiscount), subtotal));
+          }
+        }
+
+        if (discountAmount === 0 && Number(customer.walletBalance) > 0) {
+          const wanted = round2(Math.min(Number(customer.walletBalance), subtotal));
+          const spend = await tx.user.updateMany({
+            where: { id: req.user.id, walletBalance: { gte: wanted } },
+            data: { walletBalance: { decrement: wanted } },
+          });
+          if (spend.count === 1) {
+            discountAmount = wanted;
+          }
+        }
+      }
+
+      const total = subtotal - discountAmount; // free delivery for now
+
+      return tx.order.create({
+        data: {
+          orderNumber: generateOrderNumber(),
+          customerId: isGuest ? null : req.user.id,
+          guestName: isGuest ? String(guestName).trim() : null,
+          guestPhone: isGuest ? String(guestPhone).trim() : null,
+          guestAddress: isGuest ? trimmedAddress : null,
+          zoneId,
+          deliveryAddress: trimmedAddress,
+          deliveryDate: deliveryDate ? new Date(deliveryDate) : null,
+          deliveryTimeSlot,
+          paymentMethod,
+          fulfillmentType,
+          subtotal,
+          discountAmount,
+          total,
+          status: 'PENDING',
+          items: { create: orderItems },
+          statusHistory: { create: [{ status: 'PENDING', notes: 'Order placed' }] },
+        },
+        include: { items: { include: { product: true } }, zone: true },
       });
-    }
+    });
 
     // ─── Offer to the first eligible vendor in the zone ──
     // Self-pickup orders still need a vendor to prepare/hold the order.

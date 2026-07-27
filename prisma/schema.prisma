@@ -533,6 +533,7 @@ model Referral {
   referee         User           @relation("ReferralReceived", fields: [refereeId], references: [id])
   referrerBonus   Decimal        @default(50) @db.Decimal(10, 2)
   refereeDiscount Decimal        @default(50) @db.Decimal(10, 2)
+  discountUsed    Boolean        @default(false)
   status          ReferralStatus @default(PENDING)
   createdAt       DateTime       @default(now())
   creditedAt      DateTime?
