@@ -111,6 +111,26 @@ async function run() {
   }, customer.token));
   check('subscription rejects fractional quantity', fractionalQty.success === false, fractionalQty.message);
 
+  // Gateway payment methods collect once, against a checkout the customer is
+  // present for. With no saved mandate a recurring order "paid by JazzCash"
+  // would never actually be charged, so those methods must not be accepted.
+  for (const method of ['JAZZCASH', 'EASYPAISA', 'CARD']) {
+    const online = await json(await post('/subscriptions', {
+      productId: single.id, zoneId: zone.id, quantity: single.minQuantity,
+      frequency: 'WEEKLY', deliveryAddress: 'Sub Address', paymentMethod: method,
+    }, customer.token));
+    check(`subscription rejects ${method}`, online.success === false, online.message);
+  }
+
+  const bankTransfer = await json(await post('/subscriptions', {
+    productId: single.id, zoneId: zone.id, quantity: single.minQuantity,
+    frequency: 'MONTHLY', deliveryAddress: 'Bank Sub', paymentMethod: 'BANK_TRANSFER',
+  }, customer.token));
+  check('subscription accepts BANK_TRANSFER', !!bankTransfer.subscription, bankTransfer.message || 'created');
+  if (bankTransfer.subscription) {
+    await post(`/subscriptions/${bankTransfer.subscription.id}/cancel`, {}, customer.token);
+  }
+
   // ── Subscription lifecycle ──
   const sub = await json(await post('/subscriptions', {
     productId: single.id, zoneId: zone.id, quantity: single.minQuantity,

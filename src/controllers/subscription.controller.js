@@ -2,6 +2,10 @@
 const prisma = require('../config/prisma');
 const { cancelUnfulfilledOrders, advance } = require('../services/subscription.service');
 
+// Methods that settle without the customer being present at a checkout.
+// Anything gateway-backed needs a saved mandate we don't have — see create().
+const SUBSCRIPTION_PAYMENT_METHODS = ['COD', 'BANK_TRANSFER'];
+
 // Pausing never advances nextDeliveryDate (the sweep just skips non-ACTIVE
 // subscriptions), so after a lapsed pause it's stale in the past. The sweep's
 // advance() only steps one cycle at a time, so left as-is this would generate
@@ -35,8 +39,17 @@ exports.create = async (req, res, next) => {
     if (!['DAILY', 'WEEKLY', 'MONTHLY'].includes(frequency)) {
       return res.status(400).json({ success: false, message: 'Frequency must be DAILY, WEEKLY or MONTHLY' });
     }
-    if (!['COD', 'JAZZCASH', 'EASYPAISA', 'BANK_TRANSFER', 'CARD'].includes(paymentMethod)) {
-      return res.status(400).json({ success: false, message: 'Invalid payment method' });
+    // Recurring deliveries settle out of band only. The gateways collect a
+    // single payment against a checkout the customer is present for — there is
+    // no saved mandate or card on file, so a subscription paying by JazzCash,
+    // Easypaisa or card generated an order every cycle that nobody was ever
+    // asked to pay: delivered, unpaid, indefinitely. Offering the option was
+    // worse than not having it. Revisit when recurring billing exists.
+    if (!SUBSCRIPTION_PAYMENT_METHODS.includes(paymentMethod)) {
+      return res.status(400).json({
+        success: false,
+        message: 'Subscriptions can only be paid by Cash on Delivery or Bank Transfer',
+      });
     }
     if (!String(deliveryAddress).trim()) {
       return res.status(400).json({ success: false, message: 'Delivery address is required' });
