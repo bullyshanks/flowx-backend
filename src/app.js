@@ -21,6 +21,7 @@ const financeRoutes = require('./routes/finance.routes');
 const kycRoutes = require('./routes/kyc.routes');
 const notificationsRoutes = require('./routes/notifications.routes');
 const customerRoutes = require('./routes/customer.routes');
+const paymentRoutes = require('./routes/payment.routes');
 
 const app = express();
 
@@ -32,6 +33,26 @@ app.use(
     credentials: true,
   })
 );
+// Safepay signs its webhook over the raw request bytes, so this one route has
+// to see them before any parser reorders or re-encodes the JSON. Mounted ahead
+// of express.json() for that reason — moving it below silently breaks
+// signature verification, which fails closed and rejects real payments.
+app.use(
+  '/api/payments/callback',
+  express.raw({ type: 'application/json', limit: '1mb' }),
+  (req, res, next) => {
+    if (Buffer.isBuffer(req.body)) {
+      req.rawBody = req.body;
+      try {
+        req.parsedBody = req.body.length ? JSON.parse(req.body.toString('utf8')) : {};
+      } catch {
+        req.parsedBody = {};
+      }
+    }
+    next();
+  }
+);
+
 // 15mb: KYC submission sends up to 3 base64-encoded images (see auth.controller.submitKyc)
 app.use(express.json({ limit: '15mb' }));
 app.use(express.urlencoded({ extended: true }));
@@ -86,6 +107,7 @@ app.use('/api/admin/kyc', kycRoutes);
 app.use('/api/admin', adminRoutes);
 app.use('/api/notifications', notificationsRoutes);
 app.use('/api/customer', customerRoutes);
+app.use('/api/payments', paymentRoutes);
 
 // ── 404 handler ──
 app.use((req, res) => {

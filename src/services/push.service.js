@@ -148,8 +148,12 @@ const sendOrderDeliveredPush = (userId, orderNumber) =>
 const sendOrderCancelledPush = (userId, orderNumber) =>
   sendPush(userId, 'Order Cancelled', `Order ${orderNumber} has been cancelled.`);
 
+const sendPaymentReceivedPush = (userId, orderNumber, amount) =>
+  sendPush(userId, 'Payment Received', `Rs. ${Number(amount).toFixed(0)} received for order ${orderNumber}.`);
+
 module.exports = {
   sendPush,
+  sendPaymentReceivedPush,
   sendKycApprovedPush,
   sendKycRejectedPush,
   sendAccountFrozenPush,

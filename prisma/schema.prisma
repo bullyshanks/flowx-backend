@@ -54,7 +54,24 @@ enum PaymentMethod {
   JAZZCASH
   EASYPAISA
   BANK_TRANSFER
-  CARD
+  CARD // routed through Safepay — the only card acquirer wired up (see payment.service)
+}
+
+// One attempt at collecting money for an order. An order can accumulate
+// several: a customer who abandons the gateway and retries produces a new
+// attempt each time, and keeping the failed ones is what makes "the money
+// left my account but the order says unpaid" answerable later.
+enum PaymentAttemptStatus {
+  INITIATED // redirect handed to the customer, gateway hasn't reported back
+  PAID
+  FAILED
+  CANCELLED // customer backed out at the gateway
+}
+
+enum PaymentProvider {
+  JAZZCASH
+  EASYPAISA
+  SAFEPAY
 }
 
 enum PaymentStatus {
@@ -303,6 +320,7 @@ model Order {
   ledgerEntries      LedgerEntry[]
   riderLedgerEntries RiderLedgerEntry[]
   refunds            Refund[]
+  payments           Payment[]
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -540,4 +558,42 @@ model Referral {
 
   @@index([referrerId])
   @@index([status])
+}
+
+// A single attempt at collecting money through a gateway. Written when the
+// customer is handed a redirect, updated when the gateway reports back.
+//
+// Order.paymentStatus stays the field the rest of the app reads — this table
+// is the evidence behind it. rawCallback keeps the gateway's own words
+// verbatim, because reconciling a disputed payment months later against a
+// provider's dashboard is impossible from a status enum alone.
+model Payment {
+  id        String  @id @default(uuid())
+  orderId   String
+  order     Order   @relation(fields: [orderId], references: [id], onDelete: Cascade)
+
+  provider PaymentProvider
+  amount   Decimal         @db.Decimal(10, 2)
+  status   PaymentAttemptStatus @default(INITIATED)
+
+  // Our reference sent to the gateway. Unique because gateways key their
+  // idempotency on it, and a collision would let one order's callback settle
+  // another order.
+  reference String @unique
+
+  // The gateway's own identifier, only known once it responds.
+  providerTxnId String?
+
+  // Verbatim callback body, for reconciliation and dispute handling.
+  rawCallback Json?
+
+  failureReason String?
+  paidAt        DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([orderId])
+  @@index([status])
+  @@index([providerTxnId])
 }

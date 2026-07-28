@@ -162,9 +162,16 @@ const sendKycRejectedSms = (phone, reason) =>
     `FlowX: Your identity verification (KYC) was not approved${reason ? ` — ${reason}` : ''}. Please re-upload your documents. Contact us on WhatsApp at +92 315 8374442 if you have questions.`
   );
 
+const sendPaymentReceivedSms = (phone, orderNumber, amount) =>
+  sendSms(
+    phone,
+    `FlowX: Payment of Rs. ${Number(amount).toFixed(0)} received for order ${orderNumber}. Thank you!`
+  );
+
 module.exports = {
   sendSms,
   sendOtpSms,
+  sendPaymentReceivedSms,
   sendOrderConfirmationSms,
   sendOrderAssignedSms,
   sendVendorApprovedSms,

@@ -66,6 +66,17 @@ SMS_SENDER_ID=FlowX
 - Runs on Railway-assigned `PORT` (currently 8080) — must match the target port set in Settings → Networking → domain, or you get 502s.
 - Backend + Postgres **must be in the same Railway project** to use `${{Postgres.DATABASE_URL}}` variable reference.
 
+## Payments
+- Three gateways wired: **JazzCash**, **Easypaisa** (both signed form POST + return callback) and **Safepay** (API-created tracker + signed webhook, used for `CARD`).
+- `PaymentMethod` → provider: `JAZZCASH`→JazzCash, `EASYPAISA`→Easypaisa, `CARD`→Safepay. `COD` and `BANK_TRANSFER` never touch a gateway.
+- **Dev mode**: with no credentials in `.env`, checkout is simulated via `/api/payments/simulate/:reference` — the whole flow works locally without a merchant account. Fill in credentials and the same code talks to the real gateway. See `.env.example`.
+- Three rules enforced in `payment.service.settlePayment()`, each one a way to lose money: only a **signature-verified** callback settles an order (never the browser redirect), the callback **amount must match** the order total, and settling is **idempotent** (gateways retry webhooks).
+- `Payment` rows are the audit trail — one per attempt, keeping failures and the verbatim `rawCallback` for reconciliation. `Order.paymentStatus` stays the field the rest of the app reads.
+- Safepay's webhook is signed over **raw bytes**, so `/api/payments/callback` is mounted with `express.raw()` *ahead* of `express.json()` in `app.js`. Moving it below silently breaks verification.
+
+## Testing
+- `npm run smoke` runs the end-to-end suite (`tests/smoke/`) against a live server + real DB. Start the server with `DISABLE_RATE_LIMIT=true` or the run halts on the 20-request auth limit. See `tests/smoke/README.md`.
+
 ## Known Gotchas (already hit these — don't repeat)
 - CORS: `FRONTEND_URL` must be the exact deployed frontend origin (not `*`) or login/API calls fail with CORS preflight errors.
 - If Railway shows "Deployment successful" but the app 502s, check Deploy Logs (not HTTP Logs) for the real crash reason.

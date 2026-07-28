@@ -21,6 +21,7 @@ node tests/smoke/customer.js
 node tests/smoke/roles.js
 node tests/smoke/referral.js
 node tests/smoke/push.js
+node tests/smoke/payment.js
 ```
 
 Point them at a different server with `SMOKE_API_URL`.
@@ -60,3 +61,11 @@ Actual push *delivery* to a browser. That needs a real notification permission
 granted by a real user, which cannot be automated. `push.js` covers everything
 the server owns — subscription storage, auth, idempotent re-subscribe, and
 pruning of endpoints the push service rejects — and stops there.
+
+Real gateway transactions. With no merchant credentials set, the payment
+providers run in dev mode and `payment.js` drives the simulated checkout. It
+still covers the rules that matter — unsigned callbacks rejected, amount
+mismatches rejected, settlement idempotent, one customer unable to touch
+another's order — and verifies the JazzCash and Safepay signing schemes
+directly by injecting credentials in-process. What remains unverified until a
+real merchant account is attached is the gateway conversation itself.

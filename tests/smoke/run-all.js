@@ -7,6 +7,7 @@ const SUITES = [
   ['roles', require('./roles')],
   ['referral', require('./referral')],
   ['push', require('./push')],
+  ['payment', require('./payment')],
 ];
 
 (async () => {
