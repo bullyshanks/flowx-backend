@@ -54,6 +54,45 @@ async function setupReferral(userId, referralCode) {
   }
 }
 
+// Account approval gates login itself (as in v1). KYC approval gates "going
+// live" — accepting/managing orders — enforced separately by
+// requireApprovedVendor/requireApprovedRider, not here. Gating login on KYC
+// too would be circular: KYC submission itself requires a JWT, so a
+// vendor/rider with an approved account but no KYC yet would have no way to
+// log in and reach the KYC endpoint.
+//
+// Shared by both login paths on purpose — this check used to live inline in
+// password login only, which let a suspended vendor sidestep it entirely by
+// logging in through OTP instead. Returns the rejection message, or null when
+// the account is clear to hold a session.
+function accountBlockedMessage(user) {
+  if (user.role !== 'VENDOR' && user.role !== 'RIDER') return null;
+  if (user.vendorStatus === 'APPROVED') return null;
+
+  const label = user.role === 'VENDOR' ? 'Vendor' : 'Rider';
+  if (user.vendorStatus === 'REJECTED') {
+    return `${label} application rejected${user.rejectedReason ? `: ${user.rejectedReason}` : ''}.`;
+  }
+  if (user.vendorStatus === 'SUSPENDED') {
+    return `${label} account suspended. Contact FlowX admin.`;
+  }
+  return `${label} account status: ${user.vendorStatus}. Awaiting approval.`;
+}
+
+// The user shape every login path returns. vendorStatus/kycStatus matter to
+// the frontend's portal guards (vendor-portal/rider-portal layouts read them
+// straight off the persisted auth store) — omitting them, as OTP login used
+// to, left those guards comparing against undefined and bouncing approved
+// vendors back out of their own portal.
+const sessionUser = (user) => ({
+  id: user.id,
+  name: user.name,
+  phone: user.phone,
+  role: user.role,
+  vendorStatus: user.vendorStatus,
+  kycStatus: user.kycStatus,
+});
+
 const PK_PHONE_REGEX = /^(\+92|0)?3\d{9}$/;
 
 // ─────────────────────────────────────────────
@@ -330,6 +369,9 @@ exports.verifyOtp = async (req, res, next) => {
       });
     }
 
+    const blocked = accountBlockedMessage(user);
+    if (blocked) return res.status(403).json({ success: false, message: blocked });
+
     if (user.role === 'CUSTOMER') await backfillGuestOrders(phone, user.id);
 
     const token = signToken({ id: user.id, role: user.role });
@@ -338,7 +380,7 @@ exports.verifyOtp = async (req, res, next) => {
       success: true,
       message: 'OTP verified',
       token,
-      user: { id: user.id, name: user.name, phone: user.phone, role: user.role },
+      user: sessionUser(user),
     });
   } catch (err) {
     next(err);
@@ -365,23 +407,8 @@ exports.login = async (req, res, next) => {
       return res.status(401).json({ success: false, message: 'Invalid credentials' });
     }
 
-    // Account approval gates login itself (as in v1). KYC approval gates
-    // "going live" — accepting/managing orders — enforced separately by
-    // requireApprovedVendor/requireApprovedRider, not here. Gating login on
-    // KYC too would be circular: KYC submission itself requires a JWT, so a
-    // vendor/rider with an approved account but no KYC yet would have no way
-    // to log in and reach the KYC endpoint.
-    if (user.role === 'VENDOR' || user.role === 'RIDER') {
-      const label = user.role === 'VENDOR' ? 'Vendor' : 'Rider';
-      if (user.vendorStatus !== 'APPROVED') {
-        const message = user.vendorStatus === 'REJECTED'
-          ? `${label} application rejected${user.rejectedReason ? `: ${user.rejectedReason}` : ''}.`
-          : user.vendorStatus === 'SUSPENDED'
-            ? `${label} account suspended. Contact FlowX admin.`
-            : `${label} account status: ${user.vendorStatus}. Awaiting approval.`;
-        return res.status(403).json({ success: false, message });
-      }
-    }
+    const blocked = accountBlockedMessage(user);
+    if (blocked) return res.status(403).json({ success: false, message: blocked });
 
     if (user.role === 'CUSTOMER') await backfillGuestOrders(user.phone, user.id);
 
@@ -390,14 +417,7 @@ exports.login = async (req, res, next) => {
     res.json({
       success: true,
       token,
-      user: {
-        id: user.id,
-        name: user.name,
-        phone: user.phone,
-        role: user.role,
-        vendorStatus: user.vendorStatus,
-        kycStatus: user.kycStatus,
-      },
+      user: sessionUser(user),
     });
   } catch (err) {
     next(err);
