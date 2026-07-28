@@ -22,6 +22,17 @@ const {
 // placed directly against the API get the same check the cart UI enforces.
 const PK_PHONE_REGEX = /^(\+92|0)?3\d{9}$/;
 
+// Whoever is fulfilling an order needs to be able to reach the customer, but
+// only once the order is actually theirs — an open offer is visible to every
+// eligible vendor/rider in the zone, and none of them needs a phone number to
+// decide whether to take it. Strips the contact rather than never loading it,
+// so the ownership rule lives in one obvious place.
+function withCustomerContact(order, owned) {
+  if (owned) return order;
+  const { customer, guestName, guestPhone, guestAddress, ...rest } = order;
+  return { ...rest, customer: null, guestName: null, guestPhone: null, guestAddress: null };
+}
+
 // ─────────────────────────────────────────────
 // Place an order (guest or authenticated)
 // ─────────────────────────────────────────────
@@ -318,9 +329,25 @@ exports.vendorOrders = async (req, res, next) => {
         ],
       },
       orderBy: { createdAt: 'desc' },
-      include: { items: { include: { product: true } }, zone: true },
+      include: {
+        items: { include: { product: true } },
+        zone: true,
+        customer: { select: { name: true, phone: true } },
+      },
     });
-    res.json({ success: true, orders });
+
+    // A vendor fulfilling an order needs a name to ask for and a number to
+    // call when the address is unclear. Guest orders always carried that on
+    // the order row, but registered-customer orders exposed nothing, leaving
+    // the vendor with an address and nobody to contact.
+    //
+    // Only once the order is actually theirs, though: while it is merely
+    // offered, every eligible vendor in the zone can see it, and none of them
+    // needs the customer's phone number to decide whether to accept.
+    res.json({
+      success: true,
+      orders: orders.map((o) => withCustomerContact(o, o.vendorId === req.user.id)),
+    });
   } catch (err) {
     next(err);
   }
@@ -424,9 +451,25 @@ exports.riderOrders = async (req, res, next) => {
     const orders = await prisma.order.findMany({
       where: { riderId: req.user.id },
       orderBy: { createdAt: 'desc' },
-      include: { items: { include: { product: true } }, zone: true, vendor: { select: { name: true, phone: true } } },
+      include: {
+        items: { include: { product: true } },
+        zone: true,
+        vendor: { select: { name: true, phone: true } },
+        customer: { select: { name: true, phone: true } },
+      },
     });
-    res.json({ success: true, orders });
+
+    // Riders already got the vendor's number, to collect the order — but not
+    // the customer's, to actually deliver it. A rider standing outside a
+    // building with no one answering had no way to reach anyone.
+    //
+    // Revealed on acceptance, not on offer: riderAcceptDeadline is cleared
+    // when a rider accepts (see riderAcceptOrder), so a still-pending offer
+    // keeps the contact hidden.
+    res.json({
+      success: true,
+      orders: orders.map((o) => withCustomerContact(o, o.riderAcceptDeadline === null)),
+    });
   } catch (err) {
     next(err);
   }

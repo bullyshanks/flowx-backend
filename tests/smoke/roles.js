@@ -82,8 +82,23 @@ async function run() {
     queue.orders?.some((o) => o.orderNumber === order.order.orderNumber) === true,
     `${queue.orders?.length} in queue`);
 
+  // An open offer is visible to every eligible vendor in the zone, so the
+  // customer's contact details must not ride along with it.
+  const offeredRow = queue.orders?.find((o) => o.orderNumber === order.order.orderNumber);
+  check('offered order hides customer contact',
+    !offeredRow?.customer && !offeredRow?.guestPhone,
+    `customer: ${offeredRow?.customer ? 'LEAKED' : 'hidden'}`);
+
   const accepted = await json(await post(`/orders/${order.order.id}/accept`, {}, vendorToken));
   check('vendor accepts order', accepted.success !== false, accepted.order?.status || accepted.message);
+
+  // Once it is theirs they have to be able to reach the customer — an address
+  // with no name or number is not a deliverable order.
+  const ownedQueue = await json(await get('/orders/vendor/queue', vendorToken));
+  const ownedRow = ownedQueue.orders?.find((o) => o.orderNumber === order.order.orderNumber);
+  check('accepted order exposes customer contact',
+    Boolean(ownedRow?.customer?.phone && ownedRow?.customer?.name),
+    ownedRow?.customer ? `${ownedRow.customer.name} ${ownedRow.customer.phone}` : 'MISSING');
 
   // Reassigning a vendor's zone must not strip orders they already own.
   const otherZone = zones.find((z) => z.id !== zone.id);
