@@ -16,6 +16,12 @@ const {
   sendAccountFrozenPush, sendAccountUnfrozenPush,
 } = require('../services/push.service');
 
+// Payment methods settled through a gateway, where Order.paymentStatus is a
+// definitive record of whether money actually arrived. COD and BANK_TRANSFER
+// are collected out of band and nothing ever marks them paid, so their
+// paymentStatus stays PENDING and means nothing.
+const GATEWAY_METHODS = ['JAZZCASH', 'EASYPAISA', 'CARD'];
+
 // Current week: Monday 00:00 → next Monday 00:00
 function currentWeekRange() {
   const now = new Date();
@@ -789,14 +795,24 @@ exports.createRefund = async (req, res, next) => {
     // COD cash is only ever collected at delivery (see createDeliveryLedgerEntries,
     // which only fires on the DELIVERED transition) — DELIVERED and CANCELLED are
     // mutually exclusive terminal states, so a CANCELLED COD order is guaranteed
-    // to have never had any cash collected. Nothing to refund. Prepaid methods
-    // (JAZZCASH/EASYPAISA/BANK_TRANSFER/CARD) don't have this guarantee since
-    // there's no gateway integration to confirm collection either way — that
-    // stays a judgment call for the admin.
+    // to have never had any cash collected. Nothing to refund.
     if (order.paymentMethod === 'COD' && order.status === 'CANCELLED') {
       return res.status(409).json({
         success: false,
         message: 'Cannot refund a cancelled COD order — no cash was ever collected',
+      });
+    }
+
+    // Gateway-backed orders now carry a definitive answer: paymentStatus only
+    // reaches PAID when a signature-verified callback confirmed the money
+    // arrived. Refunding one that never settled pays out cash we never took —
+    // previously unknowable, which is why this was left to the admin's
+    // judgement, but no longer. BANK_TRANSFER is deliberately excluded:
+    // nothing marks those paid, so its PENDING carries no information.
+    if (GATEWAY_METHODS.includes(order.paymentMethod) && order.paymentStatus !== 'PAID') {
+      return res.status(409).json({
+        success: false,
+        message: `Cannot refund this order — payment via ${order.paymentMethod} was never completed (status: ${order.paymentStatus}). Nothing was collected.`,
       });
     }
 
