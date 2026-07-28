@@ -38,20 +38,31 @@ app.use(express.urlencoded({ extended: true }));
 app.use(morgan('dev'));
 
 // ── Rate limiting ──
-const limiter = rateLimit({
-  windowMs: 15 * 60 * 1000, // 15 min
-  max: 200,
-  standardHeaders: true,
-  legacyHeaders: false,
-});
-app.use('/api/', limiter);
+// The smoke suite makes far more auth calls in one run than the 20-request
+// ceiling allows, and these limiters are in-memory — there's no way to clear
+// them between suites short of restarting the server. Allow opting out, but
+// only ever outside production, so setting this on Railway does nothing.
+const rateLimitingDisabled =
+  process.env.DISABLE_RATE_LIMIT === 'true' && process.env.NODE_ENV !== 'production';
 
-// Stricter limit for auth
-const authLimiter = rateLimit({
-  windowMs: 15 * 60 * 1000,
-  max: 20,
-});
-app.use('/api/auth/', authLimiter);
+if (rateLimitingDisabled) {
+  console.warn('⚠  Rate limiting DISABLED (DISABLE_RATE_LIMIT=true, non-production)');
+} else {
+  const limiter = rateLimit({
+    windowMs: 15 * 60 * 1000, // 15 min
+    max: 200,
+    standardHeaders: true,
+    legacyHeaders: false,
+  });
+  app.use('/api/', limiter);
+
+  // Stricter limit for auth
+  const authLimiter = rateLimit({
+    windowMs: 15 * 60 * 1000,
+    max: 20,
+  });
+  app.use('/api/auth/', authLimiter);
+}
 
 // ── Health check ──
 app.get('/api/health', (req, res) => {
