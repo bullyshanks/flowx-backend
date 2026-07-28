@@ -25,6 +25,10 @@ router.post('/riders/settlements/generate', ctrl.generateRiderSettlements);
 router.post('/riders/settlements/:id/approve', ctrl.approveRiderSettlement);
 router.post('/riders/settlements/:id/pay', ctrl.payRiderSettlement);
 
+// Bank transfers arrive outside the system, so an admin confirms them here.
+router.get('/bank-transfers', ctrl.listBankTransfers);
+router.post('/orders/:id/mark-paid', ctrl.markOrderPaid);
+
 router.get('/refunds', ctrl.listRefunds);
 router.post('/refunds', ctrl.createRefund);
 router.post('/refunds/:id/approve', ctrl.approveRefund);

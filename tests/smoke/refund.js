@@ -83,6 +83,63 @@ async function run() {
     { orderNumber: paid.order.orderNumber, amount: 10, reason: 'nope' }, customer.token);
   check('customer cannot create refunds', asCustomer.status === 403, `HTTP ${asCustomer.status}`);
 
+  // ── Bank transfers: confirmed by an admin, since nothing else can ──
+  {
+    const bt = await place('BANK_TRANSFER');
+    const listed = await json(await get('/admin/finance/bank-transfers', admin.token));
+    const row = listed.orders?.find((o) => o.orderNumber === bt.order.orderNumber);
+    check('bank transfer appears in the worklist', !!row, `awaiting: ${row?.paymentStatus}`);
+    check('  starts unconfirmed', row?.paymentStatus === 'PENDING');
+
+    await deliver(bt.order.id);
+
+    // Unconfirmed means we have no evidence the money arrived.
+    const early = await createRefund(bt.order.orderNumber, 50);
+    check('cannot refund an unconfirmed bank transfer', early.status === 409, (await early.json()).message);
+
+    const marked = await json(await post(`/admin/finance/orders/${bt.order.id}/mark-paid`,
+      { paymentReference: 'TRX-SMOKE-BANK' }, admin.token));
+    check('admin can confirm a bank transfer', marked.order?.paymentStatus === 'PAID', marked.order?.paymentStatus || marked.message);
+
+    const stored = await prisma.order.findUnique({
+      where: { id: bt.order.id },
+      include: { statusHistory: { orderBy: { createdAt: 'desc' }, take: 1 } },
+    });
+    check('  reference recorded', stored.transactionId === 'TRX-SMOKE-BANK', stored.transactionId);
+    check('  written to order history with the admin who did it',
+      Boolean(stored.statusHistory[0]?.changedBy) && /confirmed by admin/i.test(stored.statusHistory[0]?.notes || ''),
+      stored.statusHistory[0]?.notes);
+
+    // Double-click must not re-notify the customer.
+    const again = await json(await post(`/admin/finance/orders/${bt.order.id}/mark-paid`, {}, admin.token));
+    check('  confirming twice is a no-op', again.alreadySet === true);
+
+    // Now that payment is evidenced, a refund is legitimate.
+    const nowOk = await json(await createRefund(bt.order.orderNumber, 50));
+    check('confirmed bank transfer can be refunded', !!nowOk.refund, nowOk.message || 'created');
+    if (nowOk.refund) await prisma.refund.delete({ where: { id: nowOk.refund.id } });
+
+    // Reversing a mistaken confirmation.
+    const reversed = await json(await post(`/admin/finance/orders/${bt.order.id}/mark-paid`, { paid: false }, admin.token));
+    check('confirmation can be reversed', reversed.order?.paymentStatus === 'PENDING', reversed.order?.paymentStatus || reversed.message);
+  }
+
+  // ── Only bank transfers may be asserted by hand ──
+  // A gateway payment is proven by a signed callback; letting an admin declare
+  // one paid would bypass that entirely and defeat the refund guard above.
+  {
+    const gateway = await place('JAZZCASH');
+    const handMarked = await post(`/admin/finance/orders/${gateway.order.id}/mark-paid`, { paid: true }, admin.token);
+    check('gateway orders cannot be marked paid by hand', handMarked.status === 409, (await handMarked.json()).message);
+
+    const codOrder = await place('COD');
+    const codMarked = await post(`/admin/finance/orders/${codOrder.order.id}/mark-paid`, { paid: true }, admin.token);
+    check('COD orders cannot be marked paid by hand', codMarked.status === 409, (await codMarked.json()).message);
+
+    const asCustomerMark = await post(`/admin/finance/orders/${codOrder.order.id}/mark-paid`, { paid: true }, customer.token);
+    check('customers cannot mark orders paid', asCustomerMark.status === 403, `HTTP ${asCustomerMark.status}`);
+  }
+
   // ── The finance dashboard must not count money that never arrived ──
   const stats = await json(await get('/admin/dashboard', admin.token));
   const online = Number(stats.stats?.finance?.onlineReceived ?? 0);
@@ -98,10 +155,8 @@ async function run() {
     _sum: { total: true },
     where: {
       status: 'DELIVERED',
-      OR: [
-        { paymentMethod: 'BANK_TRANSFER' },
-        { paymentMethod: { in: ['JAZZCASH', 'EASYPAISA', 'CARD'] }, paymentStatus: 'PAID' },
-      ],
+      paymentStatus: 'PAID',
+      paymentMethod: { in: ['JAZZCASH', 'EASYPAISA', 'CARD', 'BANK_TRANSFER'] },
     },
   });
   check('  onlineReceived matches only settled + bank-transfer orders',

@@ -26,20 +26,18 @@ exports.dashboard = async (req, res, next) => {
       prisma.order.aggregate({ _sum: { total: true }, where: { status: 'DELIVERED' } }),
       prisma.order.aggregate({ _sum: { total: true }, where: { status: 'DELIVERED', createdAt: { gte: startOfMonth } } }),
       prisma.order.aggregate({ _sum: { total: true }, where: { status: 'DELIVERED', paymentMethod: 'COD' } }),
-      // "Received" has to mean money we can actually account for. This used to
-      // sum every delivered non-COD order, which was the best available proxy
-      // before the gateways existed — now paymentStatus is authoritative for
-      // them, and a customer who abandoned checkout was being counted as
-      // revenue. Bank transfers have no such signal (nothing ever marks them
-      // paid), so they keep the old delivered-based assumption.
+      // "Received" has to mean money we can actually account for. This once
+      // summed every delivered non-COD order — the best proxy available before
+      // the gateways existed — so abandoned checkouts inflated revenue. Every
+      // prepaid method now has a real confirmation behind paymentStatus: the
+      // gateways set it from a verified callback, and bank transfers are
+      // confirmed by an admin (finance.markOrderPaid). Count only those.
       prisma.order.aggregate({
         _sum: { total: true },
         where: {
           status: 'DELIVERED',
-          OR: [
-            { paymentMethod: 'BANK_TRANSFER' },
-            { paymentMethod: { in: ['JAZZCASH', 'EASYPAISA', 'CARD'] }, paymentStatus: 'PAID' },
-          ],
+          paymentStatus: 'PAID',
+          paymentMethod: { in: ['JAZZCASH', 'EASYPAISA', 'CARD', 'BANK_TRANSFER'] },
         },
       }),
       prisma.user.aggregate({ _sum: { codLiability: true }, where: { role: 'VENDOR' } }),

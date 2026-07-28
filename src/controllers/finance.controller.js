@@ -9,18 +9,139 @@ const { getVendorWalletSummary, getRiderWalletSummary, round2 } = require('../se
 const { unassignVendorOrders } = require('../services/assignment.service');
 const {
   sendRefundPaidSms, sendRefundRejectedSms, sendVendorSettlementPaidSms, sendRiderSettlementPaidSms,
-  sendAccountFrozenSms, sendAccountUnfrozenSms,
+  sendAccountFrozenSms, sendAccountUnfrozenSms, sendPaymentReceivedSms,
 } = require('../services/sms.service');
 const {
   sendRefundPaidPush, sendRefundRejectedPush, sendVendorSettlementPaidPush, sendRiderSettlementPaidPush,
-  sendAccountFrozenPush, sendAccountUnfrozenPush,
+  sendAccountFrozenPush, sendAccountUnfrozenPush, sendPaymentReceivedPush,
 } = require('../services/push.service');
 
-// Payment methods settled through a gateway, where Order.paymentStatus is a
-// definitive record of whether money actually arrived. COD and BANK_TRANSFER
-// are collected out of band and nothing ever marks them paid, so their
-// paymentStatus stays PENDING and means nothing.
+// Settled by a signature-verified gateway callback. An admin must never set
+// these by hand — see markOrderPaid.
 const GATEWAY_METHODS = ['JAZZCASH', 'EASYPAISA', 'CARD'];
+
+// Everything paid before delivery, where paymentStatus is a real record of
+// whether money arrived: gateways confirm it themselves, bank transfers are
+// confirmed by an admin. COD is absent on purpose — delivery is its payment
+// event, tracked through the ledger, so its paymentStatus carries no meaning.
+const PREPAID_METHODS = [...GATEWAY_METHODS, 'BANK_TRANSFER'];
+
+// ─────────────────────────────────────────────
+// GET /admin/finance/bank-transfers — orders awaiting bank confirmation
+// ─────────────────────────────────────────────
+// The reconciliation worklist: someone with a bank statement open needs to
+// find the order a transfer belongs to. Unconfirmed first, since those are
+// the ones needing action; cancelled orders are excluded as there is nothing
+// left to confirm.
+exports.listBankTransfers = async (req, res, next) => {
+  try {
+    const orders = await prisma.order.findMany({
+      where: { paymentMethod: 'BANK_TRANSFER', status: { not: 'CANCELLED' } },
+      select: {
+        id: true, orderNumber: true, total: true, status: true,
+        paymentStatus: true, transactionId: true, createdAt: true,
+        guestName: true, guestPhone: true,
+        customer: { select: { name: true, phone: true } },
+      },
+      orderBy: [{ paymentStatus: 'asc' }, { createdAt: 'desc' }], // PAID sorts after PENDING
+      take: 200,
+    });
+
+    res.json({
+      success: true,
+      orders: orders.map(({ customer, guestName, guestPhone, ...o }) => ({
+        ...o,
+        customerName: customer?.name || guestName || 'Guest',
+        customerPhone: customer?.phone || guestPhone || null,
+      })),
+    });
+  } catch (err) {
+    next(err);
+  }
+};
+
+// ─────────────────────────────────────────────
+// POST /admin/finance/orders/:id/mark-paid — record an out-of-band payment
+// ─────────────────────────────────────────────
+// Bank transfers land in a bank account, not through any system we control,
+// so nothing could ever mark them paid. They sat PENDING forever, which meant
+// real revenue was invisible and legitimate refunds looked unrefundable.
+// This is the human confirmation step that closes that loop.
+//
+// Deliberately limited to BANK_TRANSFER:
+//   - Gateway methods are settled by a signature-verified callback. Letting an
+//     admin assert payment by hand would bypass that authority entirely and
+//     defeat the refund guard that trusts it.
+//   - COD is collected at delivery and already tracked through the vendor/rider
+//     ledger and codLiability. Delivery IS the payment event there; a second
+//     manual flag would just be a way to disagree with the ledger.
+exports.markOrderPaid = async (req, res, next) => {
+  try {
+    const { paymentReference, paid = true } = req.body;
+
+    const order = await prisma.order.findUnique({ where: { id: req.params.id } });
+    if (!order) {
+      return res.status(404).json({ success: false, message: 'Order not found' });
+    }
+
+    if (GATEWAY_METHODS.includes(order.paymentMethod)) {
+      return res.status(409).json({
+        success: false,
+        message: `${order.paymentMethod} payments are confirmed by the gateway and cannot be set by hand`,
+      });
+    }
+    if (order.paymentMethod !== 'BANK_TRANSFER') {
+      return res.status(409).json({
+        success: false,
+        message: `Only bank transfers are marked paid here — ${order.paymentMethod} is collected on delivery`,
+      });
+    }
+    if (order.status === 'CANCELLED') {
+      return res.status(409).json({ success: false, message: 'Order was cancelled' });
+    }
+
+    const wantPaid = paid !== false;
+
+    // Already in the requested state — report it and change nothing, so a
+    // double-click doesn't send the customer a second "payment received".
+    if ((wantPaid && order.paymentStatus === 'PAID') || (!wantPaid && order.paymentStatus !== 'PAID')) {
+      return res.json({ success: true, alreadySet: true, order: { id: order.id, orderNumber: order.orderNumber, paymentStatus: order.paymentStatus } });
+    }
+
+    // Reversing is allowed because this is a human judgement about money and
+    // humans mistype order numbers — but every flip is written to the order's
+    // history with who did it, so the record shows the correction.
+    const reference = paymentReference ? String(paymentReference).trim() : null;
+    const updated = await prisma.order.update({
+      where: { id: order.id },
+      data: {
+        paymentStatus: wantPaid ? 'PAID' : 'PENDING',
+        transactionId: wantPaid ? (reference || order.transactionId) : null,
+        statusHistory: {
+          create: {
+            status: order.status,
+            changedBy: req.user.id,
+            notes: wantPaid
+              ? `Bank transfer confirmed by admin${reference ? ` (ref ${reference})` : ''}`
+              : 'Bank transfer confirmation reversed by admin',
+          },
+        },
+      },
+      select: { id: true, orderNumber: true, total: true, paymentStatus: true, customerId: true, guestPhone: true, customer: { select: { phone: true } } },
+    });
+
+    if (wantPaid) {
+      const phone = updated.guestPhone || updated.customer?.phone;
+      if (phone) sendPaymentReceivedSms(phone, updated.orderNumber, updated.total);
+      if (updated.customerId) sendPaymentReceivedPush(updated.customerId, updated.orderNumber, updated.total);
+    }
+
+    const { customerId, guestPhone, customer, ...safe } = updated;
+    res.json({ success: true, order: safe });
+  } catch (err) {
+    next(err);
+  }
+};
 
 // Current week: Monday 00:00 → next Monday 00:00
 function currentWeekRange() {
@@ -803,13 +924,12 @@ exports.createRefund = async (req, res, next) => {
       });
     }
 
-    // Gateway-backed orders now carry a definitive answer: paymentStatus only
-    // reaches PAID when a signature-verified callback confirmed the money
-    // arrived. Refunding one that never settled pays out cash we never took —
-    // previously unknowable, which is why this was left to the admin's
-    // judgement, but no longer. BANK_TRANSFER is deliberately excluded:
-    // nothing marks those paid, so its PENDING carries no information.
-    if (GATEWAY_METHODS.includes(order.paymentMethod) && order.paymentStatus !== 'PAID') {
+    // Refunding an order that was never paid pays out cash we never took.
+    // paymentStatus is now trustworthy for both prepaid routes: gateways set
+    // it from a signature-verified callback, and bank transfers are confirmed
+    // by an admin through markOrderPaid. COD is excluded — it has no such
+    // marker, since delivery is the payment event and the ledger tracks it.
+    if (PREPAID_METHODS.includes(order.paymentMethod) && order.paymentStatus !== 'PAID') {
       return res.status(409).json({
         success: false,
         message: `Cannot refund this order — payment via ${order.paymentMethod} was never completed (status: ${order.paymentStatus}). Nothing was collected.`,
