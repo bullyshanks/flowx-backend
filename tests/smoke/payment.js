@@ -181,6 +181,43 @@ async function run() {
     restore();
   }
 
+  // ── A guest must be able to read their own payment result.
+  // The gateway returns them with no JWT, so the phone they ordered under is
+  // the only proof of ownership they have. Without this, a guest who paid
+  // successfully was shown an error page — money taken, failure displayed.
+  {
+    const guestPhone = '03699666003';
+    const guestOrder = await json(await post('/orders', {
+      items: [{ productId: product.id, quantity: product.minQuantity }],
+      zoneId: zones[0].id, deliveryAddress: 'Guest Payment', paymentMethod: 'EASYPAISA',
+      guestName: 'Smoke Guest', guestPhone,
+    }));
+    check('guest can place an online-payment order', guestOrder.success === true, guestOrder.order?.orderNumber);
+
+    const guestInit = await json(await post('/payments/initiate', {
+      orderId: guestOrder.order.id, guestPhone,
+    }));
+    check('  guest can initiate payment with their phone', Boolean(guestInit.redirect?.url));
+
+    await fetch(guestInit.redirect.url, { redirect: 'manual' });
+
+    const withPhone = await json(await get(`/payments/status/${guestOrder.order.orderNumber}?guestPhone=${guestPhone}`));
+    check('  guest reads their own status with the right phone',
+      withPhone.order?.paymentStatus === 'PAID', withPhone.order?.paymentStatus || withPhone.message);
+
+    const wrongPhone = await get(`/payments/status/${guestOrder.order.orderNumber}?guestPhone=03000000000`);
+    check('  a different phone is refused', wrongPhone.status === 403, `HTTP ${wrongPhone.status}`);
+
+    const noPhone = await get(`/payments/status/${guestOrder.order.orderNumber}`);
+    check('  no phone at all is refused', noPhone.status === 403, `HTTP ${noPhone.status}`);
+
+    const gOrderIds = [guestOrder.order.id];
+    await prisma.orderStatusLog.deleteMany({ where: { orderId: { in: gOrderIds } } });
+    await prisma.orderItem.deleteMany({ where: { orderId: { in: gOrderIds } } });
+    await prisma.payment.deleteMany({ where: { orderId: { in: gOrderIds } } });
+    await prisma.order.deleteMany({ where: { id: { in: gOrderIds } } });
+  }
+
   // ── The dev simulator must be unreachable once a provider is real ──
   const simulateUnknown = await fetch(`${BASE}/payments/simulate/NOT-A-REFERENCE`, { redirect: 'manual' });
   check('simulator 404s on an unknown reference', simulateUnknown.status === 404, `HTTP ${simulateUnknown.status}`);
