@@ -24,6 +24,40 @@ exports.create = async (req, res, next) => {
       return res.status(400).json({ success: false, message: 'Missing required fields' });
     }
 
+    // Subscriptions used to skip every check placeOrder makes, and because
+    // processSubscription writes its orders straight to the database rather
+    // than going back through placeOrder, nothing downstream caught it either.
+    // A subscription for 3 units of a 4-minimum product quietly generated an
+    // invalid order every cycle, forever. Validate the same things here.
+    if (!Number.isInteger(quantity) || quantity <= 0) {
+      return res.status(400).json({ success: false, message: 'Quantity must be a positive whole number' });
+    }
+    if (!['DAILY', 'WEEKLY', 'MONTHLY'].includes(frequency)) {
+      return res.status(400).json({ success: false, message: 'Frequency must be DAILY, WEEKLY or MONTHLY' });
+    }
+    if (!['COD', 'JAZZCASH', 'EASYPAISA', 'BANK_TRANSFER', 'CARD'].includes(paymentMethod)) {
+      return res.status(400).json({ success: false, message: 'Invalid payment method' });
+    }
+    if (!String(deliveryAddress).trim()) {
+      return res.status(400).json({ success: false, message: 'Delivery address is required' });
+    }
+
+    const product = await prisma.product.findFirst({ where: { id: productId, isActive: true } });
+    if (!product) {
+      return res.status(400).json({ success: false, message: 'Product not available' });
+    }
+    if (quantity < product.minQuantity) {
+      return res.status(400).json({
+        success: false,
+        message: `${product.name} requires minimum ${product.minQuantity} units`,
+      });
+    }
+
+    const zone = await prisma.zone.findFirst({ where: { id: zoneId, isActive: true } });
+    if (!zone) {
+      return res.status(400).json({ success: false, message: 'Invalid zone' });
+    }
+
     // Calculate next delivery based on frequency
     const nextDelivery = new Date();
     if (frequency === 'DAILY') nextDelivery.setDate(nextDelivery.getDate() + 1);
@@ -38,7 +72,7 @@ exports.create = async (req, res, next) => {
         quantity,
         frequency,
         preferredTimeSlot,
-        deliveryAddress,
+        deliveryAddress: String(deliveryAddress).trim(),
         paymentMethod,
         nextDeliveryDate: nextDelivery,
       },

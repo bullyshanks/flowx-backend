@@ -80,6 +80,37 @@ async function run() {
   }, customer.token));
   check('POST /orders (authenticated)', authed.success === true, authed.order?.orderNumber || authed.message);
 
+  // ── Subscription validation ──
+  // Subscriptions used to accept anything, and because processSubscription
+  // writes orders straight to the database rather than going back through
+  // placeOrder, an invalid subscription generated an invalid order every
+  // cycle, forever. These must fail at creation, not at delivery time.
+  if (bulk) {
+    const belowMin = await json(await post('/subscriptions', {
+      productId: bulk.id, zoneId: zone.id, quantity: bulk.minQuantity - 1,
+      frequency: 'WEEKLY', deliveryAddress: 'Sub Address', paymentMethod: 'COD',
+    }, customer.token));
+    check('subscription enforces minQuantity', belowMin.success === false, belowMin.message);
+  }
+
+  const badFrequency = await json(await post('/subscriptions', {
+    productId: single.id, zoneId: zone.id, quantity: single.minQuantity,
+    frequency: 'HOURLY', deliveryAddress: 'Sub Address', paymentMethod: 'COD',
+  }, customer.token));
+  check('subscription rejects invalid frequency', badFrequency.success === false, badFrequency.message);
+
+  const badSubZone = await json(await post('/subscriptions', {
+    productId: single.id, zoneId: '00000000-0000-0000-0000-000000000000', quantity: single.minQuantity,
+    frequency: 'WEEKLY', deliveryAddress: 'Sub Address', paymentMethod: 'COD',
+  }, customer.token));
+  check('subscription rejects invalid zone', badSubZone.success === false, badSubZone.message);
+
+  const fractionalQty = await json(await post('/subscriptions', {
+    productId: single.id, zoneId: zone.id, quantity: 1.5,
+    frequency: 'WEEKLY', deliveryAddress: 'Sub Address', paymentMethod: 'COD',
+  }, customer.token));
+  check('subscription rejects fractional quantity', fractionalQty.success === false, fractionalQty.message);
+
   // ── Subscription lifecycle ──
   const sub = await json(await post('/subscriptions', {
     productId: single.id, zoneId: zone.id, quantity: single.minQuantity,
