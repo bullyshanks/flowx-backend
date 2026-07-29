@@ -114,6 +114,13 @@ app.use((req, res) => {
   res.status(404).json({ success: false, message: `Route not found: ${req.method} ${req.path}` });
 });
 
+// ── Sentry error capture ──
+// Goes after the routes and before our own handler: it observes the error and
+// re-throws, so errorHandler still shapes the response the client sees. Our
+// handler ends the chain, so anything mounted after it never runs.
+const { Sentry } = require('./instrument');
+if (Sentry) Sentry.setupExpressErrorHandler(app);
+
 // ── Error handler (must be last) ──
 app.use(errorHandler);
 

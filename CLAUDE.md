@@ -74,6 +74,13 @@ SMS_SENDER_ID=FlowX
 - `Payment` rows are the audit trail — one per attempt, keeping failures and the verbatim `rawCallback` for reconciliation. `Order.paymentStatus` stays the field the rest of the app reads.
 - Safepay's webhook is signed over **raw bytes**, so `/api/payments/callback` is mounted with `express.raw()` *ahead* of `express.json()` in `app.js`. Moving it below silently breaks verification.
 
+## Error Tracking (Sentry)
+- `src/instrument.js` **must** be required before `./app` in `server.js` — Sentry patches express/prisma at require-time. Moving it later doesn't error, it just silently stops collecting request context.
+- **Dev mode**: no `SENTRY_DSN` ⇒ completely inert, no account needed. Same convention as SMS and the payment adapters.
+- `beforeSend` scrubs PII on every event: phones, addresses, OTP codes, CNIC images, tokens and gateway secrets are redacted, query strings dropped, headers/cookies deleted, and `user` reduced to `{ id, role }`. Add any new sensitive field name to `SENSITIVE_KEYS`.
+- Expected 4xx rejections (bad OTP, wrong role, rate limits) are filtered out — only 5xx and unhandled crashes are reported.
+- Explicitly captured beyond the request cycle: **startup failures** (the P1001 that took production down) and the **subscription sweep**, which runs on a timer where a swallowed error would otherwise be invisible until a customer complained.
+
 ## Testing
 - `npm run smoke` runs the end-to-end suite (`tests/smoke/`) against a live server + real DB. Start the server with `DISABLE_RATE_LIMIT=true` or the run halts on the 20-request auth limit. See `tests/smoke/README.md`.
 

@@ -4,6 +4,7 @@
 
 const { verifyToken } = require('../utils/jwt');
 const prisma = require('../config/prisma');
+const { Sentry } = require('../instrument');
 
 /**
  * Require a valid JWT — attaches req.user
@@ -32,6 +33,12 @@ const requireAuth = async (req, res, next) => {
     }
 
     req.user = user;
+
+    // Id and role only. That's enough to find the account in our own database
+    // when investigating; the phone number would just be PII sitting in a
+    // third-party dashboard. beforeSend in instrument.js strips anything more.
+    Sentry?.setUser({ id: user.id, role: user.role });
+
     next();
   } catch (err) {
     return res.status(401).json({ success: false, message: 'Invalid or expired token' });
