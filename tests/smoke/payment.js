@@ -75,10 +75,42 @@ async function run() {
   check('order marked PAID after settlement', afterPay.paymentStatus === 'PAID', afterPay.paymentStatus);
   check('  transactionId recorded', Boolean(afterPay.transactionId), afterPay.transactionId);
 
+  // A paid prepaid order is waiting on nobody, so it must not sit in the same
+  // PENDING bucket as one whose payment could still fail.
+  check('  prepaid order auto-confirms', afterPay.status === 'CONFIRMED', afterPay.status);
+  const confirmLog = await prisma.orderStatusLog.findFirst({
+    where: { orderId: order.order.id, status: 'CONFIRMED' },
+    orderBy: { createdAt: 'desc' },
+  });
+  check('  confirmation written to order history', Boolean(confirmLog), confirmLog?.notes);
+
   // ── Replay must not create a second successful payment ──
   await fetch(init.redirect.url, { redirect: 'manual' });
   check('replayed settlement is idempotent',
     (await prisma.payment.count({ where: { orderId: order.order.id, status: 'PAID' } })) === 1);
+
+  // ── Auto-confirm must never walk an order backwards ──
+  // A webhook can arrive late, or be retried after a vendor has already taken
+  // the order. Advancing PENDING is the only move that is ever safe.
+  {
+    const { statusAfterPayment, statusAfterPaymentReversal } = paymentService;
+    check('auto-confirm only moves PENDING', statusAfterPayment('PENDING') === 'CONFIRMED');
+    ['ASSIGNED', 'OUT_FOR_DELIVERY', 'DELIVERED', 'CANCELLED', 'CONFIRMED'].forEach((s) => {
+      check(`  ${s} is left alone`, statusAfterPayment(s) === s, statusAfterPayment(s));
+    });
+    check('reversal undoes only the confirm hop', statusAfterPaymentReversal('CONFIRMED') === 'PENDING');
+    check('  a vendor-held order is not pulled back', statusAfterPaymentReversal('ASSIGNED') === 'ASSIGNED');
+
+    // End to end: a late callback on an order already out for delivery.
+    const lateOrder = await placeOrder('JAZZCASH');
+    const lateInit = await json(await post('/payments/initiate', { orderId: lateOrder.order.id }, customer.token));
+    await prisma.order.update({ where: { id: lateOrder.order.id }, data: { status: 'OUT_FOR_DELIVERY' } });
+    await fetch(lateInit.redirect.url, { redirect: 'manual' });
+    const afterLate = await prisma.order.findUnique({ where: { id: lateOrder.order.id } });
+    check('late callback pays without rewinding status',
+      afterLate.paymentStatus === 'PAID' && afterLate.status === 'OUT_FOR_DELIVERY',
+      `${afterLate.paymentStatus} / ${afterLate.status}`);
+  }
 
   // ── Status endpoint reflects the truth ──
   const status = await json(await get(`/payments/status/${order.order.orderNumber}`, customer.token));

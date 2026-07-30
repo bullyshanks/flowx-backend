@@ -106,6 +106,9 @@ async function run() {
       include: { statusHistory: { orderBy: { createdAt: 'desc' }, take: 1 } },
     });
     check('  reference recorded', stored.transactionId === 'TRX-SMOKE-BANK', stored.transactionId);
+    // This one was delivered before confirmation, so auto-confirm must not
+    // rewind it — only a PENDING order moves.
+    check('  a delivered order is not rewound to CONFIRMED', stored.status === 'DELIVERED', stored.status);
     check('  written to order history with the admin who did it',
       Boolean(stored.statusHistory[0]?.changedBy) && /confirmed by admin/i.test(stored.statusHistory[0]?.notes || ''),
       stored.statusHistory[0]?.notes);
@@ -122,6 +125,19 @@ async function run() {
     // Reversing a mistaken confirmation.
     const reversed = await json(await post(`/admin/finance/orders/${bt.order.id}/mark-paid`, { paid: false }, admin.token));
     check('confirmation can be reversed', reversed.order?.paymentStatus === 'PENDING', reversed.order?.paymentStatus || reversed.message);
+  }
+
+  // ── A still-pending bank transfer confirms the order, same as a gateway ──
+  {
+    const bt = await place('BANK_TRANSFER');
+    const confirmed = await json(await post(`/admin/finance/orders/${bt.order.id}/mark-paid`,
+      { paymentReference: 'TRX-SMOKE-PENDING' }, admin.token));
+    check('confirming a pending bank transfer auto-confirms the order',
+      confirmed.order?.status === 'CONFIRMED', confirmed.order?.status || confirmed.message);
+
+    const undone = await json(await post(`/admin/finance/orders/${bt.order.id}/mark-paid`, { paid: false }, admin.token));
+    check('  reversing it returns the order to PENDING',
+      undone.order?.status === 'PENDING', undone.order?.status || undone.message);
   }
 
   // ── Only bank transfers may be asserted by hand ──

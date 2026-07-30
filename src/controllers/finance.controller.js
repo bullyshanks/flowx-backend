@@ -7,6 +7,7 @@
 const prisma = require('../config/prisma');
 const { getVendorWalletSummary, getRiderWalletSummary, round2 } = require('../services/ledger.service');
 const { unassignVendorOrders } = require('../services/assignment.service');
+const paymentService = require('../services/payment.service');
 const {
   sendRefundPaidSms, sendRefundRejectedSms, sendVendorSettlementPaidSms, sendRiderSettlementPaidSms,
   sendAccountFrozenSms, sendAccountUnfrozenSms, sendPaymentReceivedSms,
@@ -112,14 +113,23 @@ exports.markOrderPaid = async (req, res, next) => {
     // humans mistype order numbers — but every flip is written to the order's
     // history with who did it, so the record shows the correction.
     const reference = paymentReference ? String(paymentReference).trim() : null;
+
+    // A confirmed bank transfer is money in the account, so the order stops
+    // waiting — exactly as it would after a gateway callback. Reversing undoes
+    // only that hop; see statusAfterPayment for why nothing else moves.
+    const nextStatus = wantPaid
+      ? paymentService.statusAfterPayment(order.status)
+      : paymentService.statusAfterPaymentReversal(order.status);
+
     const updated = await prisma.order.update({
       where: { id: order.id },
       data: {
         paymentStatus: wantPaid ? 'PAID' : 'PENDING',
+        status: nextStatus,
         transactionId: wantPaid ? (reference || order.transactionId) : null,
         statusHistory: {
           create: {
-            status: order.status,
+            status: nextStatus,
             changedBy: req.user.id,
             notes: wantPaid
               ? `Bank transfer confirmed by admin${reference ? ` (ref ${reference})` : ''}`
@@ -127,7 +137,7 @@ exports.markOrderPaid = async (req, res, next) => {
           },
         },
       },
-      select: { id: true, orderNumber: true, total: true, paymentStatus: true, customerId: true, guestPhone: true, customer: { select: { phone: true } } },
+      select: { id: true, orderNumber: true, total: true, status: true, paymentStatus: true, customerId: true, guestPhone: true, customer: { select: { phone: true } } },
     });
 
     if (wantPaid) {

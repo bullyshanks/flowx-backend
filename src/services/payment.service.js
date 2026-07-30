@@ -150,6 +150,28 @@ async function initiatePayment(order, { returnUrl, cancelUrl }) {
   }
 }
 
+// ── Order status once money has actually arrived ───────────
+// A prepaid order that is paid is waiting on nobody: it should not sit in the
+// same PENDING bucket as an order whose payment might still fail. Advancing it
+// to CONFIRMED is what tells vendors and admins the difference.
+//
+// PENDING is the only status that moves. A late or retried webhook must never
+// walk an order backwards from ASSIGNED or DELIVERED, and a CANCELLED order
+// must stay cancelled — settling a payment is not a reason to revive it.
+//
+// COD is untouched by all of this: delivery is its payment event, so a COD
+// order stays PENDING until someone actually handles it.
+function statusAfterPayment(currentStatus) {
+  return currentStatus === 'PENDING' ? 'CONFIRMED' : currentStatus;
+}
+
+// The mirror image, for an admin reversing a bank-transfer confirmation. Only
+// undoes the hop this module made; once a vendor has taken the order, the
+// payment record being corrected is not a reason to pull it back off them.
+function statusAfterPaymentReversal(currentStatus) {
+  return currentStatus === 'CONFIRMED' ? 'PENDING' : currentStatus;
+}
+
 // ── Settle a payment ───────────────────────────────────────
 // The single place an order becomes PAID. Everything else (callbacks, the
 // dev simulator) funnels through here so the idempotency and amount checks
@@ -220,16 +242,24 @@ async function settlePayment(parsed, rawPayload) {
     return { settled: true, alreadySettled: true, orderId: payment.orderId };
   }
 
+  const nextStatus = statusAfterPayment(payment.order.status);
   await prisma.order.update({
     where: { id: payment.orderId },
     data: {
       paymentStatus: 'PAID',
+      status: nextStatus,
       transactionId: providerTxnId || reference,
-      statusHistory: { create: { status: payment.order.status, notes: `Payment received via ${payment.provider}` } },
+      statusHistory: { create: { status: nextStatus, notes: `Payment received via ${payment.provider}` } },
     },
   });
 
-  return { settled: true, alreadySettled: false, orderId: payment.orderId, provider: payment.provider };
+  return {
+    settled: true,
+    alreadySettled: false,
+    orderId: payment.orderId,
+    provider: payment.provider,
+    status: nextStatus,
+  };
 }
 
 // Parse a provider's callback into the shape settlePayment expects.
@@ -250,6 +280,8 @@ module.exports = {
   isDevMode,
   initiatePayment,
   settlePayment,
+  statusAfterPayment,
+  statusAfterPaymentReversal,
   parseProviderCallback,
   buildReference,
 };
