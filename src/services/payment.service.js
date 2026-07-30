@@ -54,6 +54,21 @@ function isDevMode(provider) {
   return !getAdapter(provider).isConfigured();
 }
 
+// Where the GATEWAY sends its result. This must be our own API and never the
+// frontend: /payments/callback/:provider verifies the signature before settling
+// anything, then redirects the customer on to the result page. Handing a
+// gateway the frontend URL instead means nothing verifies the callback and no
+// order ever settles — the customer pays and the order stays PENDING.
+//
+// Distinct from returnUrl, which is where the customer's BROWSER should end up.
+// For JazzCash and Easypaisa those are the same hop, so the callback URL does
+// both jobs; Safepay reports out of band by webhook and only needs the browser
+// destination.
+function callbackUrlFor(provider) {
+  const base = (process.env.API_PUBLIC_URL || 'http://localhost:4000/api').replace(/\/$/, '');
+  return `${base}/payments/callback/${provider.toLowerCase()}`;
+}
+
 // ── Start a payment ────────────────────────────────────────
 // Returns what the frontend needs to hand the customer to the gateway:
 // either a GET redirect or a form to auto-POST.
@@ -104,6 +119,9 @@ async function initiatePayment(order, { returnUrl, cancelUrl }) {
     const request = await adapter.buildRequest({
       reference,
       amount,
+      // Verified server-side settlement target (JazzCash, Easypaisa).
+      callbackUrl: callbackUrlFor(provider),
+      // Browser destination after checkout (Safepay).
       returnUrl,
       cancelUrl,
       description: `FlowX order ${order.orderNumber}`,

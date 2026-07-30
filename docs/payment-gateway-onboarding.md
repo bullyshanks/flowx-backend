@@ -174,14 +174,22 @@ recognise the symptoms:
 
 ---
 
-## 5. Known gap to fix before any of this is tested
+## 5. One important detail, now enforced by tests
 
-`pp_ReturnURL` (JazzCash) and `postBackURL` (Easypaisa) are currently set to the
-**frontend** result page rather than the backend callback, so the signature-verifying
-endpoint never runs and those two providers would never settle a live payment.
-Safepay is unaffected, since it settles via its separately registered webhook.
+`pp_ReturnURL` (JazzCash) and `postBackURL` (Easypaisa) **must** be FlowX's own
+`/api/payments/callback/:provider` endpoint, never the frontend result page. That
+endpoint verifies the signature, settles the order, and only then redirects the
+customer on to `/payment/result`.
 
-The smoke suite doesn't catch this because dev mode settles through
-`/payments/simulate/:reference` and bypasses the return-URL path entirely.
+This was wrong once — both pointed at the frontend, meaning nothing verified the
+callback and a live payment would have been taken without the order ever settling.
+The smoke suite missed it because dev mode settles through
+`/payments/simulate/:reference` and skips the return-URL path entirely.
 
-Fix before the first sandbox transaction.
+Fixed, and now covered by three regression tests in `tests/smoke/payment.js`:
+each adapter is checked for the right URL, and the service is checked for passing
+it. If someone reroutes these again, the suite fails.
+
+Both URLs are therefore what section 2 and 3 tell you to register. If a provider's
+onboarding form asks separately for a "return URL" and an "IPN/webhook URL", give
+the same `/api/payments/callback/<provider>` value for both.

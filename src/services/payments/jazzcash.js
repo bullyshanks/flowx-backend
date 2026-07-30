@@ -46,7 +46,11 @@ function sign(fields) {
 // undercharges by 100x and the mistake is invisible until settlement.
 const toPaisa = (rupees) => String(Math.round(Number(rupees) * 100));
 
-function buildRequest({ reference, amount, returnUrl, description }) {
+// callbackUrl, not returnUrl: JazzCash returns the customer here with the
+// signed result, so it has to be our own /payments/callback/jazzcash endpoint —
+// that verifies pp_SecureHash and only then redirects on to the frontend. Point
+// this at the frontend and nothing verifies the signature.
+function buildRequest({ reference, amount, callbackUrl, description }) {
   const now = new Date();
   const expiry = new Date(now.getTime() + 60 * 60 * 1000); // 1h to complete
 
@@ -63,7 +67,7 @@ function buildRequest({ reference, amount, returnUrl, description }) {
     pp_TxnExpiryDateTime: pktTimestamp(expiry),
     pp_BillReference: reference,
     pp_Description: description,
-    pp_ReturnURL: returnUrl,
+    pp_ReturnURL: callbackUrl,
     ppmpf_1: reference,
   };
 

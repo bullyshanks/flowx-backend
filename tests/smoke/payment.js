@@ -131,10 +131,21 @@ async function run() {
       JAZZCASH_INTEGRITY_SALT: 'testsalt123456',
     });
     const built = adapter.buildRequest({
-      reference: 'SMOKE123', amount: 300, returnUrl: 'https://example.com/r', description: 'test',
+      reference: 'SMOKE123',
+      amount: 300,
+      callbackUrl: 'https://api.example.com/api/payments/callback/jazzcash',
+      returnUrl: 'https://shop.example.com/payment/result',
+      description: 'test',
     });
     check('JazzCash builds a signed request', Boolean(built.fields.pp_SecureHash), built.method);
     check('  amount sent in paisa', built.fields.pp_Amount === '30000', built.fields.pp_Amount);
+
+    // Regression: pp_ReturnURL once pointed at the frontend result page, which
+    // has no way to verify pp_SecureHash. Live payments would have been taken
+    // and never settled. It must be our own verifying callback.
+    check('  returns to the verifying backend callback, not the frontend',
+      built.fields.pp_ReturnURL === 'https://api.example.com/api/payments/callback/jazzcash',
+      built.fields.pp_ReturnURL);
 
     // JazzCash signs the payload it actually returns, so build the response
     // field set first and sign that — appending a field after signing would
@@ -159,6 +170,61 @@ async function run() {
     const failed = adapter.parseCallback(signResponse({ pp_ResponseCode: '999', pp_ResponseMessage: 'Declined' }));
     check('  non-zero response code is not a payment', failed.paid === false, failed.failureReason);
     restore();
+  }
+
+  // ── Easypaisa builds a signed request and posts back to us, not the frontend ──
+  {
+    const { adapter, restore } = loadAdapterWithCredentials('../../src/services/payments/easypaisa', {
+      EASYPAISA_STORE_ID: '12345',
+      EASYPAISA_HASH_KEY: '1234567890123456', // must be exactly 16 chars (AES-128)
+    });
+    const built = adapter.buildRequest({
+      reference: 'SMOKE123',
+      amount: 300,
+      callbackUrl: 'https://api.example.com/api/payments/callback/easypaisa',
+      returnUrl: 'https://shop.example.com/payment/result',
+    });
+    check('Easypaisa builds a signed request', Boolean(built.fields.merchantHashedReq), built.method);
+    // Rupees here, deliberately unlike JazzCash's paisa.
+    check('  amount sent in rupees', built.fields.amount === '300.00', built.fields.amount);
+    check('  posts back to the verifying backend callback, not the frontend',
+      built.fields.postBackURL === 'https://api.example.com/api/payments/callback/easypaisa',
+      built.fields.postBackURL);
+    restore();
+  }
+
+  // ── The service hands each adapter a callback URL on our own API ──
+  // This is the wiring the two checks above depend on; testing the adapters
+  // alone would still pass if the service went back to passing the frontend URL.
+  {
+    const savedApiUrl = process.env.API_PUBLIC_URL;
+    process.env.API_PUBLIC_URL = 'https://api.example.com/api';
+    let captured = null;
+    // Reach the adapter through the service's own registry. Re-requiring the
+    // module here would hand back a different instance, because the JazzCash
+    // block above deletes it from the require cache — the stub would then be
+    // installed on an object the service never calls.
+    const jazz = paymentService.ADAPTERS.JAZZCASH;
+    const realBuild = jazz.buildRequest;
+    const realConfigured = jazz.isConfigured;
+    jazz.buildRequest = (args) => { captured = args; return { url: 'https://gw', method: 'POST', fields: {} }; };
+    jazz.isConfigured = () => true; // force the live path instead of dev simulation
+
+    const wiringOrder = await placeOrder('JAZZCASH');
+    await paymentService.initiatePayment(
+      await prisma.order.findUnique({ where: { id: wiringOrder.order.id } }),
+      { returnUrl: 'https://shop.example.com/payment/result', cancelUrl: 'https://shop.example.com/x' }
+    );
+    check('service passes the backend callback URL to the adapter',
+      captured?.callbackUrl === 'https://api.example.com/api/payments/callback/jazzcash',
+      captured?.callbackUrl);
+    check('  and keeps the frontend URL as the browser destination',
+      captured?.returnUrl === 'https://shop.example.com/payment/result', captured?.returnUrl);
+
+    jazz.buildRequest = realBuild;
+    jazz.isConfigured = realConfigured;
+    if (savedApiUrl === undefined) delete process.env.API_PUBLIC_URL;
+    else process.env.API_PUBLIC_URL = savedApiUrl;
   }
 
   // ── Safepay webhook signature is checked over the raw body ──

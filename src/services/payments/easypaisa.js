@@ -38,13 +38,15 @@ function sign(fields) {
   return Buffer.concat([cipher.update(message, 'utf8'), cipher.final()]).toString('base64');
 }
 
-function buildRequest({ reference, amount, returnUrl }) {
+// callbackUrl, not returnUrl — same reasoning as JazzCash: the postback has to
+// land on our signature-verifying endpoint, not on the frontend result page.
+function buildRequest({ reference, amount, callbackUrl }) {
   const fields = {
     storeId: STORE_ID,
     orderRefNum: reference,
     // Rupees with 2dp here — unlike JazzCash, which wants paisa.
     amount: Number(amount).toFixed(2),
-    postBackURL: returnUrl,
+    postBackURL: callbackUrl,
     expiryDate: pktExpiry(),
     paymentMethod: 'MA_PAYMENT_METHOD', // mobile account
     autoRedirect: '1',

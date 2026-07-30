@@ -97,8 +97,12 @@ exports.callback = async (req, res, next) => {
     const result = await paymentService.settlePayment(parsed, payload);
     await notifyIfNewlyPaid(result);
 
-    // A browser landing on the return URL wants a page, not JSON.
-    const isBrowserRedirect = req.method === 'GET';
+    // A browser landing on the return URL wants a page, not JSON. JazzCash and
+    // Easypaisa can be configured to return the customer by form POST rather
+    // than GET, so method alone isn't enough — a browser announces itself by
+    // asking for HTML, which a server-to-server webhook never does.
+    const wantsHtml = String(req.headers.accept || '').includes('text/html');
+    const isBrowserRedirect = req.method === 'GET' || wantsHtml;
     if (isBrowserRedirect) {
       const orderNumber = parsed.reference
         ? (await prisma.payment.findUnique({ where: { reference: parsed.reference }, select: { order: { select: { orderNumber: true } } } }))?.order?.orderNumber
