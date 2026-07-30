@@ -141,6 +141,9 @@ async function run() {
       check('zone list flags an uncovered zone unserviceable', row?.isServiceable === false,
         String(row?.isServiceable));
 
+      const demandBefore = await prisma.zoneDemand.count({ where: { zoneId: uncovered.id } });
+      const demandSince = new Date();
+
       const refused = await post('/orders', {
         items: [{ productId: product.id, quantity: product.minQuantity }],
         zoneId: uncovered.id, deliveryAddress: 'Unserved Area', paymentMethod: 'COD',
@@ -163,6 +166,35 @@ async function run() {
         (await prisma.order.count({
           where: { zoneId: uncovered.id, deliveryAddress: 'Unserved Area' },
         })) === 0);
+
+      // The refusal has to leave a trace, or an uncovered zone with real demand
+      // is indistinguishable from one nobody wants. Written fire-and-forget,
+      // so allow a moment for it to land.
+      await new Promise((r) => setTimeout(r, 300));
+      const demandAfter = await prisma.zoneDemand.count({ where: { zoneId: uncovered.id } });
+      check('  demand recorded for recruiting', demandAfter > demandBefore,
+        `${demandBefore} -> ${demandAfter}`);
+      check('  subscription refusal recorded separately',
+        (await prisma.zoneDemand.count({
+          where: { zoneId: uncovered.id, source: 'SUBSCRIPTION' },
+        })) > 0);
+      // Turning someone away is not a reason to keep their details.
+      const sample = await prisma.zoneDemand.findFirst({ where: { zoneId: uncovered.id } });
+      check('  demand rows hold no personal data',
+        !('phone' in sample) && !('customerId' in sample),
+        Object.keys(sample).join(','));
+
+      const adminZones = await json(await get('/products/zones/admin/all', admin.token));
+      const uncoveredAdmin = adminZones.zones.find((z) => z.id === uncovered.id);
+      check('admin zone list reports coverage and demand',
+        uncoveredAdmin?.activeVendors === 0 && uncoveredAdmin?.demandLast30d > 0,
+        `${uncoveredAdmin?.activeVendors} vendors / ${uncoveredAdmin?.demandLast30d} turned away`);
+
+      // Only this run's rows — real demand from real customers is not the
+      // test's to delete.
+      await prisma.zoneDemand.deleteMany({
+        where: { zoneId: uncovered.id, createdAt: { gte: demandSince } },
+      });
     }
 
     // A merely-closed vendor must NOT make the zone unserviceable — those

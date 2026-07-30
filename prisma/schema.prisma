@@ -205,11 +205,34 @@ model Zone {
   users         User[]         @relation("UserZone")
   orders        Order[]
   subscriptions Subscription[]
+  demand        ZoneDemand[]
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
   @@index([name])
+}
+
+/// One row per checkout turned away because no vendor covers the zone.
+///
+/// Without this a zone with no vendors is indistinguishable from a zone nobody
+/// wants — both look like zero orders. This is the difference between the two,
+/// and it is what says which of the eight uncovered zones to recruit first.
+///
+/// Deliberately holds no phone, name or address: it exists to count demand, not
+/// to build a marketing list out of people we turned away.
+model ZoneDemand {
+  id     String @id @default(uuid())
+  zoneId String
+  zone   Zone   @relation(fields: [zoneId], references: [id], onDelete: Cascade)
+
+  /// ORDER or SUBSCRIPTION — a rejected subscription is a stronger signal than
+  /// a one-off, since that customer wanted a standing delivery.
+  source String
+
+  createdAt DateTime @default(now())
+
+  @@index([zoneId, createdAt])
 }
 
 model Product {

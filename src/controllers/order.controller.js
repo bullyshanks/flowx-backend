@@ -16,7 +16,7 @@ const {
 const { createDeliveryLedgerEntries, round2 } = require('../services/ledger.service');
 const {
   needsRider, tryAssignVendor, tryAssignRider, reassignIfExpired, findNextVendor,
-  isZoneServiceable,
+  isZoneServiceable, recordZoneDemand,
 } = require('../services/assignment.service');
 
 // Mirrors the frontend's validatePhone (src/lib/utils.ts) so guest orders
@@ -88,6 +88,9 @@ exports.placeOrder = async (req, res, next) => {
       return res.status(400).json({ success: false, message: 'Invalid zone' });
     }
     if (!(await isZoneServiceable(zoneId))) {
+      // Count the turned-away customer. A zone with no vendors and no demand
+      // looks identical to one nobody wants; this is what tells them apart.
+      recordZoneDemand(zoneId, 'ORDER');
       return res.status(400).json({
         success: false,
         message: `We don't deliver to ${zone.name} yet — we're still onboarding vendors there. Please choose another area.`,

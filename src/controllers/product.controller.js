@@ -175,15 +175,60 @@ exports.remove = async (req, res, next) => {
 // touching any existing vendor, rider, order, or subscription that
 // references it.
 // ─────────────────────────────────────────────
+// Admin zone list, doubling as the vendor-recruitment worklist.
+//
+// "No orders" in a zone is ambiguous on its own — it could mean no demand, or
+// demand we turned away for having no vendor. demandLast30d is what separates
+// them, and it's the number that says which uncovered zone to recruit first.
 exports.adminListZones = async (req, res, next) => {
   try {
-    const zones = await prisma.zone.findMany({
-      orderBy: { name: 'asc' },
-      include: {
-        _count: { select: { users: true, orders: true, subscriptions: true } },
-      },
+    const since = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
+
+    const [zones, vendorCounts, riderCounts, demandCounts] = await Promise.all([
+      prisma.zone.findMany({
+        orderBy: { name: 'asc' },
+        include: { _count: { select: { users: true, orders: true, subscriptions: true } } },
+      }),
+      // Approved, KYC'd and unfrozen — the same definition serviceability uses,
+      // so this column can never disagree with whether checkout is open.
+      prisma.user.groupBy({
+        by: ['zoneId'],
+        where: {
+          role: 'VENDOR', vendorStatus: 'APPROVED', kycStatus: 'APPROVED',
+          isFrozen: false, zoneId: { not: null },
+        },
+        _count: { _all: true },
+      }),
+      prisma.user.groupBy({
+        by: ['zoneId'],
+        where: {
+          role: 'RIDER', vendorStatus: 'APPROVED', kycStatus: 'APPROVED',
+          isFrozen: false, zoneId: { not: null },
+        },
+        _count: { _all: true },
+      }),
+      prisma.zoneDemand.groupBy({
+        by: ['zoneId'],
+        where: { createdAt: { gte: since } },
+        _count: { _all: true },
+      }),
+    ]);
+
+    const countBy = (rows) => new Map(rows.map((r) => [r.zoneId, r._count._all]));
+    const vendors = countBy(vendorCounts);
+    const riders = countBy(riderCounts);
+    const demand = countBy(demandCounts);
+
+    res.json({
+      success: true,
+      zones: zones.map((z) => ({
+        ...z,
+        activeVendors: vendors.get(z.id) || 0,
+        activeRiders: riders.get(z.id) || 0,
+        isServiceable: (vendors.get(z.id) || 0) > 0,
+        demandLast30d: demand.get(z.id) || 0,
+      })),
     });
-    res.json({ success: true, zones });
   } catch (err) {
     next(err);
   }

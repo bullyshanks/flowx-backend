@@ -62,6 +62,15 @@ async function isZoneServiceable(zoneId) {
   return (await prisma.user.count({ where: { ...SERVICEABLE_VENDOR, zoneId } })) > 0;
 }
 
+// Record that someone tried to order somewhere we don't serve. Fire-and-forget
+// on purpose: this is analytics, and failing to write it must never turn into
+// a failed checkout for a customer who is already being told no.
+function recordZoneDemand(zoneId, source) {
+  prisma.zoneDemand
+    .create({ data: { zoneId, source } })
+    .catch((err) => console.error('[zone-demand] could not record:', err.message));
+}
+
 // Ids of every zone with at least one vendor able to serve it. One grouped
 // query rather than one per zone, since the zone list is on the hot path for
 // every checkout page load.
@@ -326,6 +335,7 @@ module.exports = {
   countStrandedOrders,
   isZoneServiceable,
   serviceableZoneIds,
+  recordZoneDemand,
   findNextVendor,
   findNextRider,
   tryAssignVendor,
