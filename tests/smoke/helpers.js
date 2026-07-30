@@ -104,6 +104,27 @@ async function findUncontestedZone() {
   throw new Error('Every active zone already has an eligible vendor — cannot stage assignment tests');
 }
 
+// A zone orders can actually be placed in. Order creation refuses zones with
+// no approved vendor (see isZoneServiceable), so suites that only need a valid
+// order — referrals, payments, refunds — must not use findUncontestedZone,
+// which returns the opposite by design. Suites testing assignment itself stage
+// their own vendor in an uncontested zone instead.
+async function findServiceableZone() {
+  const zone = await prisma.zone.findFirst({
+    where: {
+      isActive: true,
+      users: {
+        some: { role: 'VENDOR', vendorStatus: 'APPROVED', kycStatus: 'APPROVED', isFrozen: false },
+      },
+    },
+    orderBy: { name: 'asc' },
+  });
+  if (!zone) {
+    throw new Error('No zone has an approved vendor — seed one before running order-placing suites');
+  }
+  return zone;
+}
+
 // Deletes test accounts and everything hanging off them, in FK-safe order.
 // Scoped to phones under TEST_PREFIX so it can never reach real data.
 async function cleanupTestUsers(phones) {
@@ -153,5 +174,5 @@ async function cleanupTestUsers(phones) {
 module.exports = {
   prisma, BASE, TEST_PREFIX,
   createReporter, request, get, post, patch, json,
-  otpLogin, adminLogin, findUncontestedZone, cleanupTestUsers,
+  otpLogin, adminLogin, findUncontestedZone, findServiceableZone, cleanupTestUsers,
 };

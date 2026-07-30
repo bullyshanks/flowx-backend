@@ -1,6 +1,6 @@
 // Public catalogue, guest checkout, customer signup, subscriptions, auth guards.
 const {
-  prisma, createReporter, get, post, json, otpLogin, cleanupTestUsers,
+  prisma, createReporter, get, post, json, otpLogin, cleanupTestUsers, findServiceableZone,
 } = require('./helpers');
 
 const GUEST = '03699222001';
@@ -18,7 +18,12 @@ async function run() {
 
   const single = products.find((p) => p.minQuantity === 1) || products[0];
   const bulk = products.find((p) => p.minQuantity > 1);
-  const zone = zones[0];
+  // Not zones[0] — order creation refuses zones with no vendor coverage, and
+  // which zone sorts first is not something this suite should depend on.
+  const zone = await findServiceableZone();
+  check('  zone list flags serviceability',
+    zones.every((z) => typeof z.isServiceable === 'boolean'),
+    `${zones.filter((z) => z.isServiceable).length}/${zones.length} serviceable`);
 
   // ── Guest checkout ──
   const guest = await json(await post('/orders', {

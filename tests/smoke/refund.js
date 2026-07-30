@@ -1,7 +1,7 @@
 // Refund lifecycle and the guards that stop money going out that never came in.
 const {
   prisma, createReporter, get, post, patch, json,
-  otpLogin, adminLogin, cleanupTestUsers,
+  otpLogin, adminLogin, cleanupTestUsers, findServiceableZone,
 } = require('./helpers');
 
 const CUSTOMER = '03699121001';
@@ -13,12 +13,13 @@ async function run() {
 
   const admin = await adminLogin();
   const customer = await otpLogin(CUSTOMER);
-  const zones = (await json(await get('/products/zones'))).zones;
+  // Order creation refuses zones with no vendor coverage.
+  const zone = await findServiceableZone();
   const product = (await json(await get('/products'))).products.find((p) => p.minQuantity === 1);
 
   const place = async (paymentMethod) => json(await post('/orders', {
     items: [{ productId: product.id, quantity: product.minQuantity }],
-    zoneId: zones[0].id, deliveryAddress: 'Refund Smoke', paymentMethod,
+    zoneId: zone.id, deliveryAddress: 'Refund Smoke', paymentMethod,
   }, customer.token));
 
   const deliver = async (orderId) => {

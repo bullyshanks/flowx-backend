@@ -1,5 +1,6 @@
 // ─── Product CRUD ───
 const prisma = require('../config/prisma');
+const { serviceableZoneIds } = require('../services/assignment.service');
 
 exports.getAll = async (req, res, next) => {
   try {
@@ -27,14 +28,29 @@ exports.getOne = async (req, res, next) => {
   }
 };
 
+// Zones are still all returned, each flagged with whether we can actually
+// deliver there. Hiding the unserved ones would leave a customer in DHA
+// wondering why their area is missing from a site that lists it everywhere
+// else; saying "not available yet" is the honest answer, and it doubles as a
+// signal of where FlowX needs to recruit vendors.
+//
+// The flag is a convenience for the UI, not the guard — order and subscription
+// creation check serviceability themselves, since a client can send any zoneId
+// it likes.
 exports.getZones = async (req, res, next) => {
   try {
-    const zones = await prisma.zone.findMany({
-      where: { isActive: true },
-      orderBy: { name: 'asc' },
-      select: { id: true, name: true, city: true },
+    const [zones, serviceable] = await Promise.all([
+      prisma.zone.findMany({
+        where: { isActive: true },
+        orderBy: { name: 'asc' },
+        select: { id: true, name: true, city: true },
+      }),
+      serviceableZoneIds(),
+    ]);
+    res.json({
+      success: true,
+      zones: zones.map((z) => ({ ...z, isServiceable: serviceable.has(z.id) })),
     });
-    res.json({ success: true, zones });
   } catch (err) {
     next(err);
   }

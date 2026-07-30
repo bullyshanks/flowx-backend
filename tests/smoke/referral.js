@@ -2,7 +2,7 @@
 // delivery-gated bonus, wallet spend, and the concurrency guard on all of it.
 const {
   prisma, createReporter, get, post, patch, json,
-  otpLogin, adminLogin, findUncontestedZone, cleanupTestUsers,
+  otpLogin, adminLogin, findServiceableZone, cleanupTestUsers,
 } = require('./helpers');
 
 const REFERRER = '03699444001';
@@ -15,7 +15,10 @@ async function run() {
   const { check, summary } = createReporter('referral');
   await cleanupTestUsers(PHONES);
 
-  const zone = await findUncontestedZone();
+  // Referral discounts don't care who fulfils the order, but order creation
+  // now refuses zones with no vendor — so this needs a covered zone, not an
+  // uncontested one.
+  const zone = await findServiceableZone();
   const products = (await json(await get('/products'))).products;
   const product = products.find((p) => p.minQuantity === 1) || products[0];
   const orderBody = (address) => ({

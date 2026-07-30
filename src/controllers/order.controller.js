@@ -16,6 +16,7 @@ const {
 const { createDeliveryLedgerEntries, round2 } = require('../services/ledger.service');
 const {
   needsRider, tryAssignVendor, tryAssignRider, reassignIfExpired, findNextVendor,
+  isZoneServiceable,
 } = require('../services/assignment.service');
 
 // Mirrors the frontend's validatePhone (src/lib/utils.ts) so guest orders
@@ -77,10 +78,20 @@ exports.placeOrder = async (req, res, next) => {
       }
     }
 
-    // ─── Verify zone exists ──
+    // ─── Verify zone exists and can actually be served ──
+    // Taking money for an area with no vendor produces an order nobody can
+    // ever deliver. Serviceability ignores whether vendors are open right now
+    // — a closed shop reopens and the sweep picks the order up — so this only
+    // refuses zones where no approved vendor exists at all.
     const zone = await prisma.zone.findUnique({ where: { id: zoneId } });
     if (!zone) {
       return res.status(400).json({ success: false, message: 'Invalid zone' });
+    }
+    if (!(await isZoneServiceable(zoneId))) {
+      return res.status(400).json({
+        success: false,
+        message: `We don't deliver to ${zone.name} yet — we're still onboarding vendors there. Please choose another area.`,
+      });
     }
 
     // ─── Fetch products & calculate total ──

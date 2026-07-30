@@ -1,6 +1,7 @@
 // ── Subscription management ──
 const prisma = require('../config/prisma');
 const { cancelUnfulfilledOrders, advance } = require('../services/subscription.service');
+const { isZoneServiceable } = require('../services/assignment.service');
 
 // Methods that settle without the customer being present at a checkout.
 // Anything gateway-backed needs a saved mandate we don't have — see create().
@@ -69,6 +70,14 @@ exports.create = async (req, res, next) => {
     const zone = await prisma.zone.findFirst({ where: { id: zoneId, isActive: true } });
     if (!zone) {
       return res.status(400).json({ success: false, message: 'Invalid zone' });
+    }
+    // Worse here than for a one-off order: a subscription in an unserved area
+    // would generate an undeliverable order every cycle, forever.
+    if (!(await isZoneServiceable(zoneId))) {
+      return res.status(400).json({
+        success: false,
+        message: `We don't deliver to ${zone.name} yet — we're still onboarding vendors there. Please choose another area.`,
+      });
     }
 
     // Calculate next delivery based on frequency

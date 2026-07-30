@@ -6,7 +6,7 @@
 // credentials injected, because with no credentials configured the providers
 // run in simulation and never sign anything.
 const {
-  prisma, createReporter, get, post, json, otpLogin, cleanupTestUsers, BASE,
+  prisma, createReporter, get, post, json, otpLogin, cleanupTestUsers, findServiceableZone, BASE,
 } = require('./helpers');
 
 const CUSTOMER = '03699666001';
@@ -38,12 +38,13 @@ async function run() {
 
   const paymentService = require('../../src/services/payment.service');
   const customer = await otpLogin(CUSTOMER);
-  const zones = (await json(await get('/products/zones'))).zones;
+  // Order creation refuses zones with no vendor coverage.
+  const zone = await findServiceableZone();
   const product = (await json(await get('/products'))).products.find((p) => p.minQuantity === 1);
 
   const placeOrder = async (paymentMethod, token = customer.token) => json(await post('/orders', {
     items: [{ productId: product.id, quantity: product.minQuantity }],
-    zoneId: zones[0].id, deliveryAddress: 'Payment Smoke', paymentMethod,
+    zoneId: zone.id, deliveryAddress: 'Payment Smoke', paymentMethod,
   }, token));
 
   // ── COD never touches a gateway ──
@@ -287,7 +288,7 @@ async function run() {
     const guestPhone = '03699666003';
     const guestOrder = await json(await post('/orders', {
       items: [{ productId: product.id, quantity: product.minQuantity }],
-      zoneId: zones[0].id, deliveryAddress: 'Guest Payment', paymentMethod: 'EASYPAISA',
+      zoneId: zone.id, deliveryAddress: 'Guest Payment', paymentMethod: 'EASYPAISA',
       guestName: 'Smoke Guest', guestPhone,
     }));
     check('guest can place an online-payment order', guestOrder.success === true, guestOrder.order?.orderNumber);

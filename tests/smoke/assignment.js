@@ -113,6 +113,73 @@ async function run() {
   check('  sweep reports counts', typeof counts.orphaned === 'number',
     JSON.stringify(counts));
 
+  // ── Zone serviceability ──
+  // The distinction that matters: a zone with no vendor at all can never be
+  // delivered to and must refuse orders; a zone whose vendor is merely closed
+  // right now must still accept them, because the sweep recovers those.
+  {
+    const covered = await prisma.zone.findFirst({ where: { id: zone.id } });
+    const zonesResp = await json(await get('/products/zones'));
+    const coveredRow = zonesResp.zones.find((z) => z.id === covered.id);
+    check('zone list flags a covered zone serviceable', coveredRow?.isServiceable === true,
+      String(coveredRow?.isServiceable));
+
+    // An uncovered zone: one with no approved vendor assigned to it at all.
+    const allZones = await prisma.zone.findMany({ where: { isActive: true } });
+    let uncovered = null;
+    for (const z of allZones) {
+      const n = await prisma.user.count({
+        where: { role: 'VENDOR', vendorStatus: 'APPROVED', kycStatus: 'APPROVED', isFrozen: false, zoneId: z.id },
+      });
+      if (n === 0) { uncovered = z; break; }
+    }
+
+    if (!uncovered) {
+      check('an uncovered zone exists to test against', false, 'every zone has a vendor — skipped');
+    } else {
+      const row = zonesResp.zones.find((z) => z.id === uncovered.id);
+      check('zone list flags an uncovered zone unserviceable', row?.isServiceable === false,
+        String(row?.isServiceable));
+
+      const refused = await post('/orders', {
+        items: [{ productId: product.id, quantity: product.minQuantity }],
+        zoneId: uncovered.id, deliveryAddress: 'Unserved Area', paymentMethod: 'COD',
+      }, customer.token);
+      check('order to an unserved zone is refused', refused.status === 400, `HTTP ${refused.status}`);
+      const refusedBody = await refused.json();
+      check('  with a message naming the zone',
+        (refusedBody.message || '').includes(uncovered.name), refusedBody.message);
+
+      const subRefused = await post('/subscriptions', {
+        productId: product.id, zoneId: uncovered.id, quantity: product.minQuantity,
+        frequency: 'WEEKLY', deliveryAddress: 'Unserved Area', paymentMethod: 'COD',
+      }, customer.token);
+      check('subscription to an unserved zone is refused', subRefused.status === 400,
+        `HTTP ${subRefused.status}`);
+
+      // Scoped to this run's address — the zone may already hold unrelated
+      // orders from before it lost coverage.
+      check('  no order was created',
+        (await prisma.order.count({
+          where: { zoneId: uncovered.id, deliveryAddress: 'Unserved Area' },
+        })) === 0);
+    }
+
+    // A merely-closed vendor must NOT make the zone unserviceable — those
+    // orders are recoverable, and refusing them loses a sale over a lunch break.
+    await prisma.user.update({ where: { phone: VENDOR }, data: { isOpen: false, stockStatus: false } });
+    const whileClosed = await json(await get('/products/zones'));
+    check('a closed vendor still counts as coverage',
+      whileClosed.zones.find((z) => z.id === zone.id)?.isServiceable === true);
+    const acceptedAnyway = await post('/orders', {
+      items: [{ productId: product.id, quantity: product.minQuantity }],
+      zoneId: zone.id, deliveryAddress: 'Closed But Covered', paymentMethod: 'COD',
+    }, customer.token);
+    check('  and orders are still accepted while they are closed',
+      acceptedAnyway.status === 201, `HTTP ${acceptedAnyway.status}`);
+    await prisma.user.update({ where: { phone: VENDOR }, data: { isOpen: true, stockStatus: true } });
+  }
+
   await cleanupTestUsers(PHONES);
   return summary();
 }

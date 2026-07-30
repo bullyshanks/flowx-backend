@@ -42,6 +42,38 @@ async function findNextVendor({ zoneId, productIds = [] }, excludeId) {
   return candidates.find((v) => v.vendorProducts.length === 0) || null;
 }
 
+// ── Zone serviceability ────────────────────────────────────
+// Whether a zone can be served *at all*, as opposed to right now.
+//
+// Deliberately ignores isOpen and stockStatus: a vendor who is closed this
+// minute will reopen, and sweepUnassignedOrders picks the order up when they
+// do. Refusing the order over a temporary closure would turn a short wait into
+// a lost sale. What no amount of retrying fixes is a zone with no approved
+// vendor assigned to it at all — those orders can never be delivered, so the
+// honest thing is to not take them.
+const SERVICEABLE_VENDOR = {
+  role: 'VENDOR',
+  vendorStatus: 'APPROVED',
+  kycStatus: 'APPROVED',
+  isFrozen: false,
+};
+
+async function isZoneServiceable(zoneId) {
+  return (await prisma.user.count({ where: { ...SERVICEABLE_VENDOR, zoneId } })) > 0;
+}
+
+// Ids of every zone with at least one vendor able to serve it. One grouped
+// query rather than one per zone, since the zone list is on the hot path for
+// every checkout page load.
+async function serviceableZoneIds() {
+  const rows = await prisma.user.groupBy({
+    by: ['zoneId'],
+    where: { ...SERVICEABLE_VENDOR, zoneId: { not: null } },
+    _count: { _all: true },
+  });
+  return new Set(rows.filter((r) => r._count._all > 0).map((r) => r.zoneId));
+}
+
 async function findNextRider(order, excludeId) {
   return prisma.user.findFirst({
     where: {
@@ -292,6 +324,8 @@ module.exports = {
   needsRider,
   sweepUnassignedOrders,
   countStrandedOrders,
+  isZoneServiceable,
+  serviceableZoneIds,
   findNextVendor,
   findNextRider,
   tryAssignVendor,
