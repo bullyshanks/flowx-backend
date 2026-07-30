@@ -5,6 +5,7 @@ const { prisma } = require('./helpers');
 const SUITES = [
   ['customer', require('./customer')],
   ['roles', require('./roles')],
+  ['assignment', require('./assignment')],
   ['referral', require('./referral')],
   ['push', require('./push')],
   ['payment', require('./payment')],

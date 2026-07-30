@@ -7,10 +7,13 @@ const app = require('./app');
 const prisma = require('./config/prisma');
 const { processDueSubscriptions } = require('./services/subscription.service');
 const { SUBSCRIPTION_CHECK_INTERVAL_MINUTES } = require('./config/subscription');
+const { sweepUnassignedOrders } = require('./services/assignment.service');
+const { ASSIGNMENT_SWEEP_INTERVAL_SECONDS } = require('./config/assignment');
 
 const PORT = process.env.PORT || 4000;
 
 let subscriptionInterval = null;
+let assignmentInterval = null;
 
 function runSubscriptionSweep() {
   processDueSubscriptions()
@@ -25,6 +28,21 @@ function runSubscriptionSweep() {
       // would be a customer complaining their delivery never came.
       console.error('[subscriptions] sweep error:', err);
       Sentry?.captureException(err, { tags: { job: 'subscription-sweep' } });
+    });
+}
+
+function runAssignmentSweep() {
+  sweepUnassignedOrders()
+    .then(({ expiredOffers, orphaned, riderRetries }) => {
+      if (expiredOffers || orphaned || riderRetries) {
+        console.log(`[assignment] retried ${expiredOffers} expired, ${orphaned} stranded, ${riderRetries} rider`);
+      }
+    })
+    .catch((err) => {
+      // If this stops, orders quietly stop reaching vendors — the failure looks
+      // like "business is slow", not like an outage. Report it.
+      console.error('[assignment] sweep error:', err);
+      Sentry?.captureException(err, { tags: { job: 'assignment-sweep' } });
     });
 }
 
@@ -44,6 +62,9 @@ async function start() {
 
     runSubscriptionSweep();
     subscriptionInterval = setInterval(runSubscriptionSweep, SUBSCRIPTION_CHECK_INTERVAL_MINUTES * 60 * 1000);
+
+    runAssignmentSweep();
+    assignmentInterval = setInterval(runAssignmentSweep, ASSIGNMENT_SWEEP_INTERVAL_SECONDS * 1000);
   } catch (err) {
     console.error('❌ Failed to start server:', err);
     // Boot failures are exactly the ones worth knowing about — this is the
@@ -59,6 +80,7 @@ async function start() {
 process.on('SIGINT', async () => {
   console.log('\nShutting down...');
   if (subscriptionInterval) clearInterval(subscriptionInterval);
+  if (assignmentInterval) clearInterval(assignmentInterval);
   if (Sentry) await Sentry.flush(2000);
   await prisma.$disconnect();
   process.exit(0);

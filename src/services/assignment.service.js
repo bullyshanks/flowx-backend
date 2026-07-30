@@ -62,23 +62,42 @@ async function tryAssignVendor(orderId, excludeVendorId = null) {
   const order = await prisma.order.findUnique({ where: { id: orderId }, include: { items: true } });
   if (!order || order.vendorId) return order; // already accepted, nothing to do
 
-  const candidate = await findNextVendor(
-    { zoneId: order.zoneId, productIds: order.items.map((i) => i.productId) },
-    excludeVendorId
-  );
+  const productIds = order.items.map((i) => i.productId);
+  let candidate = await findNextVendor({ zoneId: order.zoneId, productIds }, excludeVendorId);
+
+  // Nobody *else* is free. In a zone with a single vendor that used to orphan
+  // the order permanently: the one vendor missed a 90-second window, was then
+  // excluded from their own zone's rotation, and the order fell out of every
+  // queue. Offering it back to them is far better than offering it to no one —
+  // they may simply have been away from their phone.
+  if (!candidate && excludeVendorId) {
+    candidate = await findNextVendor({ zoneId: order.zoneId, productIds }, null);
+  }
+
+  const sameVendorAsBefore = candidate && candidate.id === order.offeredVendorId;
+  const alreadyUnoffered = !candidate && !order.offeredVendorId;
+
+  // Nothing changed — an order with no vendors available would otherwise write
+  // an identical log line on every sweep, burying the real history.
+  if (alreadyUnoffered) return order;
+
   const updated = await prisma.order.update({
     where: { id: order.id },
     data: candidate
       ? { offeredVendorId: candidate.id, vendorAcceptDeadline: acceptDeadline() }
       : { offeredVendorId: null, vendorAcceptDeadline: null },
   });
-  await prisma.orderStatusLog.create({
-    data: {
-      orderId: order.id,
-      status: order.status,
-      notes: candidate ? `Offered to vendor ${candidate.name}` : 'No vendors available in zone',
-    },
-  });
+
+  // Re-offering to the same vendor is just the window resetting, not news.
+  if (!sameVendorAsBefore) {
+    await prisma.orderStatusLog.create({
+      data: {
+        orderId: order.id,
+        status: order.status,
+        notes: candidate ? `Offered to vendor ${candidate.name}` : 'No vendors available in zone',
+      },
+    });
+  }
   return updated;
 }
 
@@ -90,20 +109,28 @@ async function tryAssignRider(orderId, excludeRiderId = null) {
   });
   if (!order || !needsRider(order)) return order;
 
-  const candidate = await findNextRider(order, excludeRiderId);
+  let candidate = await findNextRider(order, excludeRiderId);
+  // Same single-candidate trap as vendors — see tryAssignVendor.
+  if (!candidate && excludeRiderId) candidate = await findNextRider(order, null);
+
+  const sameRiderAsBefore = candidate && candidate.id === order.riderId;
+  if (!candidate && !order.riderId) return order; // already unoffered, don't re-log
+
   const updated = await prisma.order.update({
     where: { id: order.id },
     data: candidate
       ? { riderId: candidate.id, riderAssignedAt: new Date(), riderAcceptDeadline: acceptDeadline() }
       : { riderId: null, riderAssignedAt: null, riderAcceptDeadline: null },
   });
-  await prisma.orderStatusLog.create({
-    data: {
-      orderId: order.id,
-      status: order.status,
-      notes: candidate ? `Offered to rider ${candidate.name}` : 'No riders available in zone',
-    },
-  });
+  if (!sameRiderAsBefore) {
+    await prisma.orderStatusLog.create({
+      data: {
+        orderId: order.id,
+        status: order.status,
+        notes: candidate ? `Offered to rider ${candidate.name}` : 'No riders available in zone',
+      },
+    });
+  }
   return updated;
 }
 
@@ -185,9 +212,86 @@ async function reassignRiderOrders(riderId, reason = 'suspended') {
   return orders.length;
 }
 
+// Orders still waiting on a vendor. Also the admin worklist query — an order
+// nobody has been offered is one nobody is going to deliver.
+const AWAITING_VENDOR = {
+  vendorId: null,
+  status: { in: ['PENDING', 'CONFIRMED'] },
+};
+
+/**
+ * Background re-offer sweep.
+ *
+ * reassignIfExpired only runs when someone reads a queue, and it only looks at
+ * orders offered to *that* reader. So an order whose offer expired while no
+ * other vendor was free ended up with offeredVendorId = null, in nobody's
+ * queue, invisible until an admin went looking. A paid order could sit there
+ * indefinitely.
+ *
+ * This closes that hole from the other side: it finds those orders on a timer
+ * regardless of who is looking, and retries them. A zone whose vendors were
+ * all closed at order time gets picked up as soon as one reopens.
+ *
+ * Returns counts rather than logging, so the caller decides how loud to be.
+ */
+async function sweepUnassignedOrders() {
+  const now = new Date();
+  let expiredOffers = 0;
+  let orphaned = 0;
+  let riderRetries = 0;
+
+  // 1. Offers whose window has passed, whoever they were made to.
+  const expired = await prisma.order.findMany({
+    where: {
+      ...AWAITING_VENDOR,
+      offeredVendorId: { not: null },
+      vendorAcceptDeadline: { lt: now },
+    },
+    select: { id: true, offeredVendorId: true },
+  });
+  for (const o of expired) {
+    await tryAssignVendor(o.id, o.offeredVendorId);
+    expiredOffers += 1;
+  }
+
+  // 2. Orders sitting with no offer at all — the case that used to be lost.
+  const stranded = await prisma.order.findMany({
+    where: { ...AWAITING_VENDOR, offeredVendorId: null },
+    select: { id: true },
+  });
+  for (const o of stranded) {
+    await tryAssignVendor(o.id, null);
+    orphaned += 1;
+  }
+
+  // 3. Riders have the identical trap once a vendor has accepted.
+  const riderExpired = await prisma.order.findMany({
+    where: {
+      status: 'ASSIGNED',
+      riderId: { not: null },
+      riderAcceptDeadline: { lt: now },
+    },
+    select: { id: true, riderId: true },
+  });
+  for (const o of riderExpired) {
+    await tryAssignRider(o.id, o.riderId);
+    riderRetries += 1;
+  }
+
+  return { expiredOffers, orphaned, riderRetries };
+}
+
+// Count for the admin dashboard: orders with no vendor and no live offer.
+// If this is above zero, someone needs to open a zone or call a vendor.
+async function countStrandedOrders() {
+  return prisma.order.count({ where: { ...AWAITING_VENDOR, offeredVendorId: null } });
+}
+
 module.exports = {
   ACCEPT_WINDOW_SECONDS,
   needsRider,
+  sweepUnassignedOrders,
+  countStrandedOrders,
   findNextVendor,
   findNextRider,
   tryAssignVendor,

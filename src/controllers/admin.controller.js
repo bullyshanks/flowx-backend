@@ -1,5 +1,6 @@
 // ── Admin dashboard analytics ──
 const prisma = require('../config/prisma');
+const { countStrandedOrders } = require('../services/assignment.service');
 
 exports.dashboard = async (req, res, next) => {
   try {
@@ -13,6 +14,7 @@ exports.dashboard = async (req, res, next) => {
       todayOrders, monthOrders, pendingOrders,
       activeSubscriptions, totalRevenueAgg, monthRevenueAgg,
       codCollectedAgg, onlineReceivedAgg, codLiabilityAgg, commissionAgg, frozenVendors, frozenRiders,
+      strandedOrders,
     ] = await Promise.all([
       prisma.user.count({ where: { role: 'CUSTOMER' } }),
       prisma.user.count({ where: { role: 'VENDOR', vendorStatus: 'APPROVED' } }),
@@ -44,6 +46,10 @@ exports.dashboard = async (req, res, next) => {
       prisma.ledgerEntry.aggregate({ _sum: { amount: true }, where: { type: 'COMMISSION_DEDUCTED' } }),
       prisma.user.count({ where: { role: 'VENDOR', isFrozen: true } }),
       prisma.user.count({ where: { role: 'RIDER', isFrozen: true } }),
+      // Orders with no vendor and no live offer. The sweep keeps retrying
+      // these, but if the number stays above zero it means a whole zone has
+      // nobody open — that needs a human, not another retry.
+      countStrandedOrders(),
     ]);
 
     res.json({
@@ -54,7 +60,10 @@ exports.dashboard = async (req, res, next) => {
           vendors: totalVendors, pendingVendors,
           riders: totalRiders, pendingRiders,
         },
-        orders: { today: todayOrders, month: monthOrders, pending: pendingOrders },
+        orders: {
+          today: todayOrders, month: monthOrders, pending: pendingOrders,
+          stranded: strandedOrders,
+        },
         subscriptions: { active: activeSubscriptions },
         revenue: {
           total: Number(totalRevenueAgg._sum.total || 0),
