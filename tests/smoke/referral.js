@@ -135,6 +135,32 @@ async function run() {
     check('  vendor referral endpoint reachable', refInfo.success === true, refInfo.message);
     check('  reward amount published', refInfo.rewardPerVendor > 0, String(refInfo.rewardPerVendor));
 
+    // ── Admin controls the reward, within a ceiling ──
+    const { patch: httpPatch } = require('./helpers');
+    const settingsBefore = await json(await get('/admin/finance/commission-settings', admin.token));
+    const originalReward = Number(settingsBefore.settings.vendorReferralReward);
+
+    const tooBig = await httpPatch('/admin/finance/commission-settings',
+      { vendorReferralReward: 500000 }, admin.token);
+    check('reward is capped against a mistyped figure', tooBig.status === 400, `HTTP ${tooBig.status}`);
+
+    const negative = await httpPatch('/admin/finance/commission-settings',
+      { vendorReferralReward: -1 }, admin.token);
+    check('  and cannot be negative', negative.status === 400, `HTTP ${negative.status}`);
+
+    const set750 = await json(await httpPatch('/admin/finance/commission-settings',
+      { vendorReferralReward: 750 }, admin.token));
+    check('admin can change the reward', Number(set750.settings?.vendorReferralReward) === 750,
+      String(set750.settings?.vendorReferralReward));
+    check('  commission percentage left untouched',
+      Number(set750.settings?.defaultCommissionPct) === Number(settingsBefore.settings.defaultCommissionPct),
+      String(set750.settings?.defaultCommissionPct));
+
+    // A referral already promised an amount keeps it — changing the setting
+    // must not rewrite a deal someone already accepted.
+    await httpPatch('/admin/finance/commission-settings',
+      { vendorReferralReward: originalReward }, admin.token);
+
     // A new vendor signs up with that code.
     await post('/auth/register/vendor', {
       name: 'Referred Vendor', phone: V_REFEREE, password: 'Test1234!',
@@ -143,6 +169,8 @@ async function run() {
     const ve = await prisma.user.findUnique({ where: { phone: V_REFEREE } });
     const link = await prisma.referral.findUnique({ where: { refereeId: ve.id } });
     check('vendor referral linked at signup', link?.kind === 'VENDOR', link?.kind);
+    check('  bonus locked in at the rate current when they signed up',
+      Number(link?.referrerBonus) === originalReward, `PKR ${link?.referrerBonus}`);
     check('  referee gets no customer discount', Number(link?.refereeDiscount) === 0,
       String(link?.refereeDiscount));
 

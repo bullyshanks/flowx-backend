@@ -311,16 +311,44 @@ exports.getCommissionSettings = async (req, res, next) => {
 
 exports.updateCommissionSettings = async (req, res, next) => {
   try {
-    const { defaultCommissionPct } = req.body;
-    const pct = Number(defaultCommissionPct);
-    if (Number.isNaN(pct) || pct < 0 || pct > 100) {
-      return res.status(400).json({ success: false, message: 'defaultCommissionPct must be between 0 and 100' });
+    const { defaultCommissionPct, vendorReferralReward } = req.body;
+    const data = {};
+
+    if (defaultCommissionPct !== undefined) {
+      const pct = Number(defaultCommissionPct);
+      if (Number.isNaN(pct) || pct < 0 || pct > 100) {
+        return res.status(400).json({ success: false, message: 'defaultCommissionPct must be between 0 and 100' });
+      }
+      data.defaultCommissionPct = pct;
     }
 
+    // Real money paid out per referred vendor, so it is worth a ceiling — a
+    // mistyped 50000 would otherwise be honoured on the next delivery.
+    if (vendorReferralReward !== undefined) {
+      const reward = Number(vendorReferralReward);
+      if (Number.isNaN(reward) || reward < 0 || reward > 100000) {
+        return res.status(400).json({
+          success: false,
+          message: 'vendorReferralReward must be between 0 and 100000',
+        });
+      }
+      data.vendorReferralReward = reward;
+    }
+
+    if (Object.keys(data).length === 0) {
+      return res.status(400).json({
+        success: false,
+        message: 'Provide defaultCommissionPct and/or vendorReferralReward',
+      });
+    }
+
+    // Changing this only affects referrals created from here on — existing
+    // Referral rows carry the amount they were promised at signup, and moving
+    // that after the fact would be changing a deal someone already accepted.
     let settings = await prisma.commissionSettings.findFirst();
     settings = settings
-      ? await prisma.commissionSettings.update({ where: { id: settings.id }, data: { defaultCommissionPct: pct } })
-      : await prisma.commissionSettings.create({ data: { defaultCommissionPct: pct } });
+      ? await prisma.commissionSettings.update({ where: { id: settings.id }, data })
+      : await prisma.commissionSettings.create({ data });
 
     res.json({ success: true, settings });
   } catch (err) {

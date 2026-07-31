@@ -432,9 +432,8 @@ model CommissionSettings {
   id                   String   @id @default(uuid())
   defaultCommissionPct Decimal  @default(20) @db.Decimal(5, 2)
   /// Paid to whoever brought a new vendor on, once that vendor completes their
-  /// first delivery. PLACEHOLDER VALUE — set this to whatever the business
-  /// actually intends to pay before enabling the scheme.
-  vendorReferralReward Decimal  @default(1000) @db.Decimal(10, 2)
+  /// first delivery. Admin-settable — see finance.updateCommissionSettings.
+  vendorReferralReward Decimal  @default(500) @db.Decimal(10, 2)
   updatedAt            DateTime @updatedAt
 }
 
