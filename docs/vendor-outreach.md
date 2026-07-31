@@ -265,3 +265,46 @@ places worth working, roughly in order of how warm the lead is:
 Check `/admin/zones` before each round of outreach — the **Turned away (30d)**
 column tells you which uncovered area has real customers waiting, and that's the
 one to work first.
+
+---
+
+## 9. Chasing a registered vendor who hasn't done KYC
+
+A vendor stuck at `NOT_SUBMITTED` is approved but cannot receive a single order,
+and nothing in the system will chase them — there is no SMS gateway configured,
+so no automatic reminder goes out. This is a manual phone call or message.
+
+They are not being asked to fill in a form: logging into the vendor portal drops
+them straight onto the upload screen. It is genuinely a two-minute job.
+
+### Roman Urdu
+
+> Assalam-o-Alaikum {NAME}, FlowX se {YOUR_NAME}.
+>
+> Aap ka account approve ho chuka hai — bas aakhri step reh gaya hai. App mein
+> login karein aur apna CNIC (aagay aur peechay) plus ek selfie upload kar dein.
+> Login karte hi wohi screen khulti hai, do minute ka kaam hai.
+>
+> Jab tak yeh tasdeeq mukammal nahi hoti, aap ko order nahi mil sakte. Upload
+> kar dein to main aaj hi approve kar deta hoon aur {AREA} ke saray orders aap
+> ko milna shuru ho jayenge.
+>
+> Login: {LOGIN_URL}
+
+### English
+
+> Assalam-o-Alaikum {NAME}, it's {YOUR_NAME} from FlowX.
+>
+> Your account is approved — there's one step left. Log into the app and upload
+> your CNIC (front and back) plus a selfie. It's the first screen you'll see
+> after logging in, two minutes at most.
+>
+> Until that's verified you can't be sent any orders. Upload it and I'll approve
+> you the same day, and every order in {AREA} starts coming to you.
+>
+> Login: {LOGIN_URL}
+
+**If they can't log in:** password login works, but OTP login will not reach
+them — there is no SMS gateway, so the code only appears in the Railway deploy
+logs. If they've forgotten their password, read the OTP out of the logs and
+give it to them over the phone, or reset it directly.
