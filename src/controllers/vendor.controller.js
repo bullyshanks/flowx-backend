@@ -11,6 +11,73 @@ const {
   sendVendorApprovedPush, sendAccountSuspendedPush, sendAccountReactivatedPush, sendAccountRejectedPush,
 } = require('../services/push.service');
 const { tryAssignVendor, unassignVendorOrders } = require('../services/assignment.service');
+const { generateReferralCode } = require('../utils/generators');
+
+// ─────────────────────────────────────────────
+// GET /vendors/referral — this vendor's referral code and what it has earned
+// ─────────────────────────────────────────────
+// Vendors registered before the scheme existed have no code, so mint one on
+// first read rather than running a backfill migration.
+exports.getReferral = async (req, res, next) => {
+  try {
+    let user = await prisma.user.findUnique({
+      where: { id: req.user.id },
+      select: { referralCode: true },
+    });
+
+    if (!user.referralCode) {
+      for (let attempt = 0; attempt < 5; attempt += 1) {
+        try {
+          user = await prisma.user.update({
+            where: { id: req.user.id },
+            data: { referralCode: generateReferralCode() },
+            select: { referralCode: true },
+          });
+          break;
+        } catch (err) {
+          if (err.code !== 'P2002') throw err; // code collision — try another
+        }
+      }
+    }
+
+    const [referrals, settings, earnedAgg] = await Promise.all([
+      prisma.referral.findMany({
+        where: { referrerId: req.user.id, kind: 'VENDOR' },
+        orderBy: { createdAt: 'desc' },
+        select: {
+          status: true, referrerBonus: true, createdAt: true, creditedAt: true,
+          // Enough to recognise who they referred, without handing over a
+          // phone number they may not have shared with this vendor.
+          referee: { select: { name: true, zone: { select: { name: true } } } },
+        },
+      }),
+      prisma.commissionSettings.findFirst(),
+      prisma.ledgerEntry.aggregate({
+        where: { vendorId: req.user.id, type: 'REFERRAL_BONUS' },
+        _sum: { amount: true },
+      }),
+    ]);
+
+    res.json({
+      success: true,
+      referralCode: user.referralCode,
+      rewardPerVendor: Number(settings?.vendorReferralReward ?? 1000),
+      signedUp: referrals.length,
+      credited: referrals.filter((r) => r.status === 'CREDITED').length,
+      totalEarned: Number(earnedAgg._sum.amount || 0),
+      referrals: referrals.map((r) => ({
+        name: r.referee.name,
+        zone: r.referee.zone?.name || null,
+        status: r.status,
+        bonus: Number(r.referrerBonus),
+        createdAt: r.createdAt,
+        creditedAt: r.creditedAt,
+      })),
+    });
+  } catch (err) {
+    next(err);
+  }
+};
 
 // ─────────────────────────────────────────────
 // Admin: list all vendors (filterable)

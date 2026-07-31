@@ -129,12 +129,14 @@ async function getVendorWalletSummary(vendorId) {
   const totalProductValue = sumOf('PRODUCT_VALUE');
   const totalRiderEarning = sumOf('RIDER_EARNING');
   const totalCommission = -sumOf('COMMISSION_DEDUCTED'); // stored negative, report positive
+  const totalReferralBonus = sumOf('REFERRAL_BONUS');
   const netPayable = round2(grouped.reduce((acc, g) => acc + Number(g._sum.amount), 0));
 
   return {
     totalProductValue: round2(totalProductValue),
     totalRiderEarning: round2(totalRiderEarning),
     totalCommission: round2(totalCommission),
+    totalReferralBonus: round2(totalReferralBonus),
     netPayable,
   };
 }

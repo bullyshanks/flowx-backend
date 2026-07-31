@@ -28,7 +28,26 @@ async function backfillGuestOrders(phone, customerId) {
 // order.controller's DELIVERED handler for the actual crediting. Referral
 // failures must never block signup: invalid code, self-referral, an already-
 // referred phone re-registering — all just silently skipped, never an error.
-async function setupReferral(userId, referralCode) {
+// Who is allowed to refer whom.
+//
+// A customer referral can only come from another customer — that has always
+// been the rule, and letting a vendor hand out customer discount codes in their
+// own zone would be paying them to discount their own orders.
+//
+// A vendor referral can come from anyone holding a code. Vendors referring
+// vendors is the point (they know the trade), but a customer who introduces
+// their local water shop has done exactly as much good.
+const REFERRER_ALLOWED = {
+  CUSTOMER: (referrer) => referrer.role === 'CUSTOMER',
+  VENDOR: (referrer) => referrer.role === 'CUSTOMER' || referrer.role === 'VENDOR',
+};
+
+async function vendorReferralReward() {
+  const settings = await prisma.commissionSettings.findFirst();
+  return settings ? Number(settings.vendorReferralReward) : 1000;
+}
+
+async function setupReferral(userId, referralCode, kind = 'CUSTOMER') {
   for (let attempt = 0; attempt < 5; attempt += 1) {
     try {
       await prisma.user.update({ where: { id: userId }, data: { referralCode: generateReferralCode() } });
@@ -42,12 +61,23 @@ async function setupReferral(userId, referralCode) {
   const code = String(referralCode).trim().toUpperCase();
 
   const referrer = await prisma.user.findUnique({ where: { referralCode: code } });
-  if (!referrer || referrer.id === userId || referrer.role !== 'CUSTOMER') return;
+  if (!referrer || referrer.id === userId || !REFERRER_ALLOWED[kind]?.(referrer)) return;
+
+  // A new vendor gets orders, not a discount — the reward is one-sided, and
+  // paid only once they actually deliver something (see order.controller).
+  const bonus = kind === 'VENDOR' ? await vendorReferralReward() : undefined;
 
   try {
     await prisma.$transaction([
       prisma.user.update({ where: { id: userId }, data: { referredById: referrer.id } }),
-      prisma.referral.create({ data: { referrerId: referrer.id, refereeId: userId } }),
+      prisma.referral.create({
+        data: {
+          referrerId: referrer.id,
+          refereeId: userId,
+          kind,
+          ...(kind === 'VENDOR' && { referrerBonus: bonus, refereeDiscount: 0 }),
+        },
+      }),
     ]);
   } catch (err) {
     if (err.code !== 'P2002') throw err; // refereeId already has a referral row — ignore
@@ -155,7 +185,7 @@ exports.registerCustomer = async (req, res, next) => {
 // ─────────────────────────────────────────────
 exports.registerVendor = async (req, res, next) => {
   try {
-    const { name, phone, cnic, password, zoneId } = req.body;
+    const { name, phone, cnic, password, zoneId, referralCode } = req.body;
 
     if (!name || !String(name).trim() || !phone || !password || !zoneId) {
       return res.status(400).json({ success: false, message: 'Name, phone, password, and zone are required' });
@@ -191,6 +221,10 @@ exports.registerVendor = async (req, res, next) => {
         isVerified: false,
       },
     });
+
+    // Gives this vendor their own code to share, and links the one they signed
+    // up with. Never allowed to fail the registration — same rule as customers.
+    await setupReferral(vendor.id, referralCode, 'VENDOR');
 
     res.status(201).json({
       success: true,

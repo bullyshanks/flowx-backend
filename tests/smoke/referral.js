@@ -9,7 +9,16 @@ const REFERRER = '03699444001';
 const REFEREE = '03699444002';
 const BOGUS = '03699444009';
 const RACER = '03699444010';
-const PHONES = [REFERRER, REFEREE, BOGUS, RACER];
+// Vendor-referral cast: an existing vendor referring a new one, plus customers
+// to place the orders that trigger (and must not trigger) the payout.
+const V_REFERRER = '03699444020';
+const V_REFEREE = '03699444021';
+const V_CUSTOMER = '03699444022';
+const V_CUSTOMER2 = '03699444023';
+const PHONES = [
+  REFERRER, REFEREE, BOGUS, RACER,
+  V_REFERRER, V_REFEREE, V_CUSTOMER, V_CUSTOMER2,
+];
 
 async function run() {
   const { check, summary } = createReporter('referral');
@@ -100,6 +109,107 @@ async function run() {
   const discounts = [Number(a.order?.discountAmount), Number(b.order?.discountAmount)].sort((x, y) => x - y);
   check('concurrent orders discount exactly once',
     discounts[0] === 0 && discounts[1] === 50, `got [${discounts}]`);
+
+  // ── Vendor referrals ──
+  // Same model, different trigger: paid when the referred VENDOR completes
+  // their first delivery, not when they sign up or get approved. Approval is a
+  // form review; a delivery cannot be faked without actually delivering water.
+  {
+    const { findUncontestedZone } = require('./helpers');
+    const vzone = await findUncontestedZone();
+    const products = (await json(await get('/products'))).products;
+    const vproduct = products.find((p) => p.minQuantity === 1) || products[0];
+
+    // The referrer is an existing vendor, so their bonus lands in the ledger.
+    await post('/auth/register/vendor', {
+      name: 'Referrer Vendor', phone: V_REFERRER, password: 'Test1234!', zoneId: vzone.id,
+    });
+    const vr = await prisma.user.findUnique({ where: { phone: V_REFERRER } });
+    await post(`/vendors/${vr.id}/approve`, {}, admin.token);
+    await prisma.user.update({ where: { phone: V_REFERRER }, data: { kycStatus: 'APPROVED' } });
+    check('vendor gets a referral code on registration', /^FLW[A-Z0-9]{6}$/.test(vr.referralCode || ''),
+      vr.referralCode);
+
+    const vrLogin = await json(await post('/auth/login', { phone: V_REFERRER, password: 'Test1234!' }));
+    const refInfo = await json(await get('/vendors/referral', vrLogin.token));
+    check('  vendor referral endpoint reachable', refInfo.success === true, refInfo.message);
+    check('  reward amount published', refInfo.rewardPerVendor > 0, String(refInfo.rewardPerVendor));
+
+    // A new vendor signs up with that code.
+    await post('/auth/register/vendor', {
+      name: 'Referred Vendor', phone: V_REFEREE, password: 'Test1234!',
+      zoneId: vzone.id, referralCode: vr.referralCode,
+    });
+    const ve = await prisma.user.findUnique({ where: { phone: V_REFEREE } });
+    const link = await prisma.referral.findUnique({ where: { refereeId: ve.id } });
+    check('vendor referral linked at signup', link?.kind === 'VENDOR', link?.kind);
+    check('  referee gets no customer discount', Number(link?.refereeDiscount) === 0,
+      String(link?.refereeDiscount));
+
+    const bonusOf = async () => Number((await prisma.ledgerEntry.aggregate({
+      where: { vendorId: vr.id, type: 'REFERRAL_BONUS' }, _sum: { amount: true },
+    }))._sum.amount || 0);
+
+    // Approval alone must pay nothing — that is the whole anti-abuse point.
+    await post(`/vendors/${ve.id}/approve`, {}, admin.token);
+    await prisma.user.update({ where: { phone: V_REFEREE }, data: { kycStatus: 'APPROVED' } });
+    check('approval alone pays no bonus', (await bonusOf()) === 0,
+      `PKR ${await bonusOf()}`);
+    check('  referral still pending',
+      (await prisma.referral.findUnique({ where: { id: link.id } })).status === 'PENDING');
+
+    // Both vendors sit in the same zone, and offers go to the first eligible
+    // vendor by id — so without this the order could land on the referrer and
+    // the test would pass or fail on uuid ordering. Close the referrer: they
+    // are only here to hold the code, not to compete for the order.
+    await prisma.user.update({ where: { phone: V_REFERRER }, data: { isOpen: false } });
+
+    // The referred vendor delivers their first order.
+    const vcustomer = await otpLogin(V_CUSTOMER);
+    const vorder = await json(await post('/orders', {
+      items: [{ productId: vproduct.id, quantity: vproduct.minQuantity }],
+      zoneId: vzone.id, deliveryAddress: 'Vendor Referral Test', paymentMethod: 'COD',
+    }, vcustomer.token));
+    const veLogin = await json(await post('/auth/login', { phone: V_REFEREE, password: 'Test1234!' }));
+    const accepted = await json(await post(`/orders/${vorder.order.id}/accept`, {}, veLogin.token));
+    check('  referred vendor accepts the order', accepted.success !== false,
+      accepted.order?.status || accepted.message);
+    await patch(`/orders/${vorder.order.id}/status`, { status: 'OUT_FOR_DELIVERY' }, admin.token);
+    await patch(`/orders/${vorder.order.id}/status`, { status: 'DELIVERED' }, admin.token);
+
+    const paid = await bonusOf();
+    check('bonus paid on the referred vendor\'s first delivery', paid === Number(link.referrerBonus),
+      `PKR ${paid} of ${link.referrerBonus}`);
+    check('  referral marked CREDITED',
+      (await prisma.referral.findUnique({ where: { id: link.id } })).status === 'CREDITED');
+
+    // A second delivery must not pay again.
+    const vorder2 = await json(await post('/orders', {
+      items: [{ productId: vproduct.id, quantity: vproduct.minQuantity }],
+      zoneId: vzone.id, deliveryAddress: 'Second Delivery', paymentMethod: 'COD',
+    }, vcustomer.token));
+    await post(`/orders/${vorder2.order.id}/accept`, {}, veLogin.token);
+    await patch(`/orders/${vorder2.order.id}/status`, { status: 'OUT_FOR_DELIVERY' }, admin.token);
+    await patch(`/orders/${vorder2.order.id}/status`, { status: 'DELIVERED' }, admin.token);
+    check('  a second delivery does not pay twice', (await bonusOf()) === paid, `PKR ${await bonusOf()}`);
+
+    const after = await json(await get('/vendors/referral', vrLogin.token));
+    check('referrer sees the credited invite',
+      after.signedUp === 1 && after.credited === 1 && after.totalEarned === paid,
+      `${after.signedUp} invited / ${after.credited} credited / PKR ${after.totalEarned}`);
+    check('  invite list withholds the referee phone number',
+      after.referrals?.[0] && !('phone' in after.referrals[0]),
+      Object.keys(after.referrals?.[0] || {}).join(','));
+
+    // A vendor must not be able to hand out customer discount codes.
+    const selfCust = await otpLogin(V_CUSTOMER2, vr.referralCode);
+    const custLink = await prisma.referral.findUnique({
+      where: { refereeId: (await prisma.user.findUnique({ where: { phone: V_CUSTOMER2 } })).id },
+    });
+    check('a vendor code cannot create a customer referral', !custLink,
+      custLink ? 'LINKED' : 'ignored');
+    check('  but signup still succeeds', selfCust.success === true);
+  }
 
   await cleanupTestUsers(PHONES);
   return summary();

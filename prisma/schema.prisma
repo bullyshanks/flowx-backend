@@ -100,6 +100,7 @@ enum LedgerEntryType {
   REFUND
   ADJUSTMENT
   SETTLEMENT_PAYOUT
+  REFERRAL_BONUS // paid to a vendor who brought another vendor onto FlowX
 }
 
 enum SettlementStatus {
@@ -118,6 +119,14 @@ enum RefundStatus {
 enum ReferralStatus {
   PENDING // referee signed up, hasn't completed a first order yet
   CREDITED // referee's first order delivered — referrer's bonus paid out
+}
+
+/// What was referred. Both settle on the referee's first DELIVERED order, but
+/// "first order" means different things: for a CUSTOMER it's the first order
+/// they placed, for a VENDOR the first one they fulfilled.
+enum ReferralKind {
+  CUSTOMER
+  VENDOR
 }
 
 // ─── MODELS ─────────────────────────────────────────────────
@@ -422,6 +431,10 @@ model Subscription {
 model CommissionSettings {
   id                   String   @id @default(uuid())
   defaultCommissionPct Decimal  @default(20) @db.Decimal(5, 2)
+  /// Paid to whoever brought a new vendor on, once that vendor completes their
+  /// first delivery. PLACEHOLDER VALUE — set this to whatever the business
+  /// actually intends to pay before enabling the scheme.
+  vendorReferralReward Decimal  @default(1000) @db.Decimal(10, 2)
   updatedAt            DateTime @updatedAt
 }
 
@@ -572,7 +585,9 @@ model Referral {
   referrer        User           @relation("ReferralGiven", fields: [referrerId], references: [id])
   refereeId       String         @unique
   referee         User           @relation("ReferralReceived", fields: [refereeId], references: [id])
+  kind            ReferralKind   @default(CUSTOMER)
   referrerBonus   Decimal        @default(50) @db.Decimal(10, 2)
+  /// Always 0 for VENDOR referrals — a new vendor gets orders, not a discount.
   refereeDiscount Decimal        @default(50) @db.Decimal(10, 2)
   discountUsed    Boolean        @default(false)
   status          ReferralStatus @default(PENDING)
@@ -581,6 +596,7 @@ model Referral {
 
   @@index([referrerId])
   @@index([status])
+  @@index([kind, status])
 }
 
 // A single attempt at collecting money through a gateway. Written when the

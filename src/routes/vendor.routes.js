@@ -6,6 +6,10 @@ const { requireAuth, requireRole, requireApprovedVendor } = require('../middlewa
 
 // ── Vendor self ──
 router.get('/dashboard', requireAuth, requireApprovedVendor, ctrl.dashboard);
+// Only requireRole, not requireApprovedVendor: a vendor still waiting on KYC
+// can't take orders yet, but there's no reason they can't already be telling
+// other suppliers about FlowX.
+router.get('/referral', requireAuth, requireRole('VENDOR'), ctrl.getReferral);
 router.patch('/me/storefront', requireAuth, requireApprovedVendor, ctrl.updateStorefront);
 router.get('/me/products', requireAuth, requireApprovedVendor, ctrl.listMyProducts);
 router.patch('/me/products/:productId', requireAuth, requireApprovedVendor, ctrl.updateMyProduct);

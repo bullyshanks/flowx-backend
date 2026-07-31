@@ -34,6 +34,48 @@ function withCustomerContact(order, owned) {
   return { ...rest, customer: null, guestName: null, guestPhone: null, guestAddress: null };
 }
 
+// Pay out a vendor referral once the referred vendor has delivered their first
+// order. Where the money lands depends on who referred them: a vendor's balance
+// is the ledger, a customer's is walletBalance.
+//
+// The claim is a compare-and-swap on status — two orders for the same new
+// vendor being marked DELIVERED at once must not pay the bonus twice, and the
+// loser of the race simply finds nothing left to claim.
+async function creditVendorReferral(vendorId) {
+  const referral = await prisma.referral.findUnique({ where: { refereeId: vendorId } });
+  if (!referral || referral.kind !== 'VENDOR' || referral.status !== 'PENDING') return;
+
+  const referrer = await prisma.user.findUnique({
+    where: { id: referral.referrerId },
+    select: { id: true, role: true, name: true },
+  });
+  if (!referrer) return;
+
+  await prisma.$transaction(async (tx) => {
+    const claimed = await tx.referral.updateMany({
+      where: { id: referral.id, status: 'PENDING' },
+      data: { status: 'CREDITED', creditedAt: new Date() },
+    });
+    if (claimed.count === 0) return; // another delivery got here first
+
+    if (referrer.role === 'VENDOR') {
+      await tx.ledgerEntry.create({
+        data: {
+          vendorId: referrer.id,
+          type: 'REFERRAL_BONUS',
+          amount: referral.referrerBonus,
+          description: 'Referral bonus — referred vendor completed their first delivery',
+        },
+      });
+    } else {
+      await tx.user.update({
+        where: { id: referrer.id },
+        data: { walletBalance: { increment: referral.referrerBonus } },
+      });
+    }
+  });
+}
+
 // ─────────────────────────────────────────────
 // Place an order (guest or authenticated)
 // ─────────────────────────────────────────────
@@ -630,7 +672,7 @@ exports.updateStatus = async (req, res, next) => {
       // against the same order (or a later one) re-triggering DELIVERED.
       if (order.customerId) {
         const referral = await prisma.referral.findUnique({ where: { refereeId: order.customerId } });
-        if (referral && referral.status === 'PENDING') {
+        if (referral && referral.status === 'PENDING' && referral.kind === 'CUSTOMER') {
           await prisma.$transaction([
             prisma.user.update({
               where: { id: referral.referrerId },
@@ -643,6 +685,13 @@ exports.updateStatus = async (req, res, next) => {
           ]);
         }
       }
+
+      // Vendor referral: paid when the referred vendor completes their FIRST
+      // delivery, not when they are approved. Approval is a form review; a
+      // delivery is proof the vendor is real and actually serving customers,
+      // and it cannot be faked without genuinely delivering water. Paying at
+      // approval would reward volume of signups instead of supply.
+      if (order.vendorId) await creditVendorReferral(order.vendorId);
     }
 
     // Notify customer of the status change
