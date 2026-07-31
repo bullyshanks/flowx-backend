@@ -25,6 +25,17 @@ const paymentRoutes = require('./routes/payment.routes');
 
 const app = express();
 
+// Railway (and Vercel, and any CDN) puts a proxy in front of us, so every
+// request arrives from the proxy's IP with the real client in X-Forwarded-For.
+// Without this, express-rate-limit keys every visitor to the same address:
+// the 20-request auth limit becomes a GLOBAL budget, and one person retrying
+// their OTP locks out everybody in the country. Production logged
+// ERR_ERL_UNEXPECTED_X_FORWARDED_FOR on the first boot after the restart.
+//
+// 1 = trust exactly one hop. Trusting all (`true`) would let a caller forge
+// X-Forwarded-For and dodge the limiter entirely.
+app.set('trust proxy', 1);
+
 // ── Security & parsing ──
 app.use(helmet());
 app.use(
