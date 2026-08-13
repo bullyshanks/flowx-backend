@@ -1,0 +1,50 @@
+name: Deploy API to Azure
+
+on:
+  push:
+    branches: [azure-deployment]
+  workflow_dispatch:
+
+# OIDC: the runner exchanges this token with Entra ID for a short-lived Azure
+# credential. Nothing long-lived is stored in GitHub.
+permissions:
+  id-token: write
+  contents: read
+
+concurrency:
+  group: deploy-api
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # git archive ships tracked files only, so .env cannot reach Azure even
+      # if someone creates one on a runner. Oryx runs npm install server-side,
+      # which fires postinstall: prisma generate.
+      - name: Package tracked source
+        run: git archive --format=zip --output api.zip HEAD
+
+      - uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - uses: azure/webapps-deploy@v3
+        with:
+          app-name: app-flowx-api-sh42
+          package: api.zip
+
+      # A green deploy step only means the zip landed. This proves the app
+      # actually booted and reached Postgres.
+      - name: Verify health
+        run: |
+          for i in $(seq 1 30); do
+            code=$(curl -s -o /dev/null -w "%{http_code}" https://app-flowx-api-sh42.azurewebsites.net/api/health || true)
+            if [ "$code" = "200" ]; then echo "API healthy after ${i} attempt(s)"; exit 0; fi
+            echo "attempt $i: HTTP $code"; sleep 10
+          done
+          echo "::error::API never returned 200"; exit 1
