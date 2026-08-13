@@ -115,7 +115,10 @@ async function main() {
 
   await prisma.user.upsert({
     where: { phone: adminPhone },
-    update: { role: 'ADMIN' },
+    // Set the password on update too, not just create. Without it the seed can
+    // create an admin but never rotate one, so a leaked password could only be
+    // fixed by hand in the database.
+    update: { role: 'ADMIN', password: hashedPassword },
     create: {
       name: 'FlowX Admin',
       phone: adminPhone,
@@ -124,7 +127,9 @@ async function main() {
       isVerified: true,
     },
   });
-  console.log(`   ✓ Admin: ${adminPhone} / ${adminPassword}\n`);
+  // Never log the password. This runs on every Railway deploy, which would put
+  // the admin credential in the deploy log permanently.
+  console.log(`   ✓ Admin: ${adminPhone}\n`);
 
   console.log('✅ Done!');
 }
