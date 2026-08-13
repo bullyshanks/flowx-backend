@@ -26,4 +26,7 @@ router.post('/login', ctrl.login);
 router.get('/me', requireAuth, ctrl.me);
 router.patch('/me', requireAuth, ctrl.updateMe);
 
+// Revoke every JWT issued for this account (stolen token, shared device, etc.)
+router.post('/logout-all', requireAuth, ctrl.logoutAll);
+
 module.exports = router;

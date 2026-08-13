@@ -5,6 +5,9 @@
 
 const prisma = require('../config/prisma');
 const { generateOrderNumber } = require('../utils/generators');
+const { clampTake, clampSkip, validEnum } = require('../utils/pagination');
+
+const ORDER_STATUSES = ['PENDING', 'CONFIRMED', 'ASSIGNED', 'OUT_FOR_DELIVERY', 'DELIVERED', 'CANCELLED'];
 const {
   sendOrderConfirmationSms, sendOrderAssignedSms,
   sendOrderOutForDeliverySms, sendOrderDeliveredSms, sendOrderCancelledSms,
@@ -300,18 +303,41 @@ exports.placeOrder = async (req, res, next) => {
 exports.trackOrder = async (req, res, next) => {
   try {
     const { orderNumber } = req.params;
+    // Order numbers alone are only a 5-digit random suffix (~90k
+    // possibilities/year, see generateOrderNumber) — enumerable at scale even
+    // with the dedicated rate limiter on this route (app.js). Requiring the
+    // last 4 digits of the phone tied to the order (guest or account) as a
+    // second factor, the same proof-of-ownership convention already used by
+    // payment.controller's canAccessOrder, cuts the guessable space from
+    // ~90,000 to ~90,000 × 10,000 without needing an account or a login flow
+    // for what is meant to stay a public, no-signup tracking page.
+    const phoneLast4 = String(req.query.phoneLast4 || req.body?.phoneLast4 || '').trim();
+    if (!/^\d{4}$/.test(phoneLast4)) {
+      return res.status(400).json({ success: false, message: 'The last 4 digits of your phone number are required' });
+    }
 
-    const existing = await prisma.order.findUnique({ where: { orderNumber }, select: { id: true } });
-    if (existing) await reassignIfExpired(existing.id);
+    const existing = await prisma.order.findUnique({
+      where: { orderNumber },
+      select: { id: true, guestPhone: true, customer: { select: { phone: true } } },
+    });
+    if (!existing) {
+      return res.status(404).json({ success: false, message: 'Order not found' });
+    }
 
-    // This endpoint is public and unauthenticated — order numbers are only a
-    // 5-digit random suffix (~90k possibilities/year, see generateOrderNumber),
-    // guessable/enumerable at scale. Keep the response to what a tracking page
-    // actually needs: no statusHistory (internal ops notes + raw changedBy
-    // user ids — unused by the frontend anyway, see track/page.tsx) and no
-    // vendor/rider phone numbers (real PII that would otherwise be harvestable
-    // by anyone willing to guess order numbers). Names alone are enough
-    // context ("your rider is Ali") without exposing a way to contact them.
+    const orderPhone = existing.guestPhone || existing.customer?.phone || '';
+    if (orderPhone.slice(-4) !== phoneLast4) {
+      return res.status(404).json({ success: false, message: 'Order not found' });
+    }
+
+    await reassignIfExpired(existing.id);
+
+    // Keep the response to what a tracking page actually needs: no
+    // statusHistory (internal ops notes + raw changedBy user ids — unused by
+    // the frontend anyway, see track/page.tsx) and no vendor/rider phone
+    // numbers (real PII that would otherwise be harvestable by anyone who
+    // passes the phoneLast4 check for their own order). Names alone are
+    // enough context ("your rider is Ali") without exposing a way to contact
+    // them.
     const order = await prisma.order.findUnique({
       where: { orderNumber },
       select: {
@@ -337,10 +363,6 @@ exports.trackOrder = async (req, res, next) => {
         },
       },
     });
-
-    if (!order) {
-      return res.status(404).json({ success: false, message: 'Order not found' });
-    }
 
     res.json({ success: true, order });
   } catch (err) {
@@ -719,7 +741,8 @@ exports.updateStatus = async (req, res, next) => {
 // ─────────────────────────────────────────────
 exports.adminListOrders = async (req, res, next) => {
   try {
-    const { status, zoneId, vendorId, limit = 50, offset = 0 } = req.query;
+    const { status: rawStatus, zoneId, vendorId, limit, offset } = req.query;
+    const status = validEnum(rawStatus, ORDER_STATUSES);
 
     const orders = await prisma.order.findMany({
       where: {
@@ -728,8 +751,8 @@ exports.adminListOrders = async (req, res, next) => {
         ...(vendorId && { vendorId }),
       },
       orderBy: { createdAt: 'desc' },
-      take: Number(limit),
-      skip: Number(offset),
+      take: clampTake(limit, { def: 50, max: 200 }),
+      skip: clampSkip(offset),
       include: {
         items: { include: { product: true } },
         zone: true,

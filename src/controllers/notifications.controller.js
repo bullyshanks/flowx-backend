@@ -6,16 +6,56 @@
 
 const prisma = require('../config/prisma');
 
+// web-push hands `endpoint` to the underlying HTTP client verbatim with no
+// host allowlist of its own — an unvalidated endpoint turns any event that
+// triggers a push (placing an order, etc.) into a blind server-side request
+// to a host of the caller's choosing. Restrict to the push services actually
+// in use; add an origin here before shipping support for a new browser.
+const ALLOWED_PUSH_HOSTS = [
+  'fcm.googleapis.com', // Chrome/Edge/Android
+  'updates.push.services.mozilla.com', // Firefox
+  'notify.windows.com', 'wns2-*.notify.windows.com', // legacy Edge/WNS
+  'push.apple.com', // Safari/WebKit (web.push.apple.com and *.push.apple.com subdomains)
+];
+
+function isAllowedPushEndpoint(endpoint) {
+  let url;
+  try {
+    url = new URL(endpoint);
+  } catch {
+    return false;
+  }
+  if (url.protocol !== 'https:') return false;
+  return ALLOWED_PUSH_HOSTS.some((pattern) => {
+    if (pattern.includes('*')) {
+      const re = new RegExp('^' + pattern.replace(/\./g, '\\.').replace(/\*/g, '[^.]+') + '$');
+      return re.test(url.hostname);
+    }
+    return url.hostname === pattern || url.hostname.endsWith(`.${pattern}`);
+  });
+}
+
 // ─────────────────────────────────────────────
 // POST /notifications/subscribe — { endpoint, keys: { p256dh, auth } }
-// Upsert by endpoint (same browser/device re-subscribing, or a different
-// user taking over a shared device, both just update the row).
+// Upsert by endpoint (same browser/device re-subscribing updates its own
+// row). A different account can never take over an endpoint someone else
+// already registered — without that check, learning another user's
+// (high-entropy but not secret) endpoint URL would silently rebind their
+// device to the attacker's notifications.
 // ─────────────────────────────────────────────
 exports.subscribe = async (req, res, next) => {
   try {
     const { endpoint, keys } = req.body;
     if (!endpoint || !keys?.p256dh || !keys?.auth) {
       return res.status(400).json({ success: false, message: 'endpoint and keys.{p256dh,auth} are required' });
+    }
+    if (!isAllowedPushEndpoint(endpoint)) {
+      return res.status(400).json({ success: false, message: 'Unrecognized push endpoint' });
+    }
+
+    const existing = await prisma.pushSubscription.findUnique({ where: { endpoint } });
+    if (existing && existing.userId !== req.user.id) {
+      return res.status(409).json({ success: false, message: 'This subscription belongs to another account' });
     }
 
     const subscription = await prisma.pushSubscription.upsert({

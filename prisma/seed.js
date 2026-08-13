@@ -109,8 +109,17 @@ async function main() {
 
   // ─── Admin user ──
   console.log('👤 Seeding admin user...');
-  const adminPhone = process.env.ADMIN_PHONE || '03158374442';
-  const adminPassword = process.env.ADMIN_PASSWORD || 'ChangeMe123!';
+  // No password fallback: 'ChangeMe123!' was published in this repo's own
+  // .env.example, so defaulting to it here would mean any deploy that forgot
+  // to set ADMIN_PASSWORD silently (re-)applies a publicly known credential
+  // to the admin account — and this seed runs on every Railway deploy via
+  // the documented start command, re-asserting it each time. Skip the admin
+  // upsert instead of guessing.
+  const adminPhone = process.env.ADMIN_PHONE;
+  const adminPassword = process.env.ADMIN_PASSWORD;
+  if (!adminPhone || !adminPassword) {
+    console.warn('   ⚠ ADMIN_PHONE / ADMIN_PASSWORD not set — skipping admin seed (no fallback credential).');
+  } else {
   const hashedPassword = await bcrypt.hash(adminPassword, 10);
 
   await prisma.user.upsert({
@@ -130,6 +139,7 @@ async function main() {
   // Never log the password. This runs on every Railway deploy, which would put
   // the admin credential in the deploy log permanently.
   console.log(`   ✓ Admin: ${adminPhone}\n`);
+  }
 
   console.log('✅ Done!');
 }

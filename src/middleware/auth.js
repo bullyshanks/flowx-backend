@@ -23,13 +23,21 @@ const requireAuth = async (req, res, next) => {
       where: { id: decoded.id },
       select: {
         id: true, name: true, phone: true, role: true, vendorStatus: true, zoneId: true, isVerified: true,
-        codLimit: true, codLiability: true, isFrozen: true,
+        codLimit: true, codLiability: true, isFrozen: true, tokenVersion: true,
         kycStatus: true, rejectedReason: true, isOnline: true, isOpen: true, stockStatus: true,
       },
     });
 
     if (!user) {
       return res.status(401).json({ success: false, message: 'User not found' });
+    }
+
+    // Tokens signed before tokenVersion existed carry no claim at all
+    // (undefined), which must not match a real user's version — otherwise
+    // every old token would silently keep working forever, defeating the
+    // point of a revocation counter.
+    if (decoded.tokenVersion !== user.tokenVersion) {
+      return res.status(401).json({ success: false, message: 'Session revoked — please log in again' });
     }
 
     req.user = user;

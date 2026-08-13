@@ -7,6 +7,8 @@
 
 const prisma = require('../config/prisma');
 const { needsRider, tryAssignRider, reassignRiderOrders } = require('../services/assignment.service');
+const { validEnum } = require('../utils/pagination');
+const VENDOR_STATUSES = ['PENDING', 'APPROVED', 'REJECTED', 'SUSPENDED']; // shared field on User
 const {
   sendAccountFrozenSms, sendAccountUnfrozenSms, sendRiderApprovedSms,
   sendAccountSuspendedSms, sendAccountReactivatedSms, sendAccountRejectedSms,
@@ -21,7 +23,8 @@ const {
 // ─────────────────────────────────────────────
 exports.listRiders = async (req, res, next) => {
   try {
-    const { status, zoneId } = req.query;
+    const { status: rawStatus, zoneId } = req.query;
+    const status = validEnum(rawStatus, VENDOR_STATUSES);
 
     const riders = await prisma.user.findMany({
       where: {
@@ -134,8 +137,9 @@ exports.toggleSuspend = async (req, res, next) => {
     const suspending = existing.vendorStatus === 'APPROVED';
     const rider = await prisma.user.update({
       where: { id: existing.id },
+      // Suspending also revokes any live session immediately.
       data: suspending
-        ? { vendorStatus: 'SUSPENDED', rejectedReason: reason || 'Account suspended' }
+        ? { vendorStatus: 'SUSPENDED', rejectedReason: reason || 'Account suspended', tokenVersion: { increment: 1 } }
         : { vendorStatus: 'APPROVED', rejectedReason: null },
     });
 
@@ -215,7 +219,9 @@ exports.toggleFreeze = async (req, res, next) => {
     const isFrozen = typeof req.body.isFrozen === 'boolean' ? req.body.isFrozen : !rider.isFrozen;
     const updated = await prisma.user.update({
       where: { id: rider.id },
-      data: { isFrozen },
+      // Freezing kills any live session immediately rather than waiting for
+      // the JWT to expire.
+      data: isFrozen ? { isFrozen, tokenVersion: { increment: 1 } } : { isFrozen },
       select: { id: true, name: true, phone: true, isFrozen: true },
     });
 

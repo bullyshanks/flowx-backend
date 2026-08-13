@@ -140,6 +140,13 @@ model User {
   role       Role    @default(CUSTOMER)
   isVerified Boolean @default(false)
 
+  // Bumped to invalidate every previously-issued JWT for this user in one
+  // write — a stolen token, a suspended/frozen account, or a "log out
+  // everywhere" request all need a way to kill a live session, and JWTs are
+  // otherwise valid until they expire (JWT_EXPIRES_IN) with no server-side
+  // record to revoke. Checked in requireAuth against the token's own claim.
+  tokenVersion Int @default(0)
+
   // Customer-specific
   defaultAddress String?
   zoneId         String?

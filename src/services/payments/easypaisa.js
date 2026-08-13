@@ -10,6 +10,7 @@
 //
 // Docs: https://easypay.easypaisa.com.pk/  (Merchant Integration Guide)
 const crypto = require('crypto');
+const { safeCompare } = require('../../utils/safeCompare');
 
 const STORE_ID = process.env.EASYPAISA_STORE_ID;
 const HASH_KEY = process.env.EASYPAISA_HASH_KEY;
@@ -65,7 +66,7 @@ function parseCallback(payload) {
   let signatureValid = false;
   if (received) {
     try {
-      signatureValid = sign(payload) === received;
+      signatureValid = safeCompare(sign(payload), received);
     } catch {
       signatureValid = false;
     }

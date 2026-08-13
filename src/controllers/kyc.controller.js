@@ -10,13 +10,14 @@ const { sendKycApprovedPush, sendKycRejectedPush } = require('../services/push.s
 const {
   needsRider, tryAssignVendor, tryAssignRider, unassignVendorOrders, reassignRiderOrders,
 } = require('../services/assignment.service');
+const { validEnum } = require('../utils/pagination');
 
 // ─────────────────────────────────────────────
 // Admin: list users with KYC pending review (optionally by role)
 // ─────────────────────────────────────────────
 exports.listPending = async (req, res, next) => {
   try {
-    const { role } = req.query;
+    const role = validEnum(req.query.role, ['VENDOR', 'RIDER']);
 
     const users = await prisma.user.findMany({
       where: {

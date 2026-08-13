@@ -19,9 +19,20 @@ const errorHandler = (err, req, res, next) => {
     return res.status(400).json({ success: false, message: err.message });
   }
 
-  res.status(err.status || 500).json({
+  const status = err.status || 500;
+  // Below 500, err.message is almost always something a controller set on
+  // purpose for the client to read. At 500 it's usually a raw Prisma/Node
+  // error — those name models, fields, and sometimes the failing value
+  // (e.g. an invalid enum sent as a query param), which is exactly the kind
+  // of internal detail that shouldn't leave the server. Stack traces stay
+  // dev-only as before.
+  const message = status < 500 || process.env.NODE_ENV === 'development'
+    ? err.message || 'Internal server error'
+    : 'Internal server error';
+
+  res.status(status).json({
     success: false,
-    message: err.message || 'Internal server error',
+    message,
     ...(process.env.NODE_ENV === 'development' && { stack: err.stack }),
   });
 };

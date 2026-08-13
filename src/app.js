@@ -38,9 +38,18 @@ app.set('trust proxy', 1);
 
 // ── Security & parsing ──
 app.use(helmet());
+// No '*' fallback: with credentials:true, a wildcard origin combined with an
+// unset FRONTEND_URL would silently open every authenticated endpoint to
+// reads from any origin the moment someone forgets to set the env var — and
+// the server would boot normally, giving no signal anything was wrong.
+// Fail loudly in production instead; local dev gets a permissive default.
+const allowedOrigins = process.env.FRONTEND_URL?.split(',').map((o) => o.trim());
+if (!allowedOrigins && process.env.NODE_ENV === 'production') {
+  throw new Error('FRONTEND_URL environment variable is required in production');
+}
 app.use(
   cors({
-    origin: process.env.FRONTEND_URL?.split(',') || '*',
+    origin: allowedOrigins || 'http://localhost:3000',
     credentials: true,
   })
 );
@@ -94,6 +103,29 @@ if (rateLimitingDisabled) {
     max: 20,
   });
   app.use('/api/auth/', authLimiter);
+
+  // OTP send is the one endpoint that mints a new secret rather than just
+  // checking one, and it's also the primitive a CSRF-forged form POST from
+  // another site can drive without needing the attacker's own IP quota (see
+  // the sendOtp per-phone throttle in auth.controller.js, which this
+  // complements at the IP layer). Tighter than the general auth budget.
+  const otpSendLimiter = rateLimit({ windowMs: 15 * 60 * 1000, max: 10 });
+  app.use('/api/auth/otp/send', otpSendLimiter);
+
+  // Public order tracking has no auth at all — order numbers are only a
+  // 5-digit random suffix (90,000/year), so without a tight limiter here an
+  // attacker can enumerate the order book directly through this route.
+  const trackLimiter = rateLimit({ windowMs: 15 * 60 * 1000, max: 30 });
+  app.use('/api/orders/track/', trackLimiter);
+
+  // Guest payment status/initiate is authorized by a full phone number match
+  // (canAccessOrder in payment.controller.js) rather than a login — reasonable
+  // as a second factor, but still worth a tight limiter of its own so a
+  // targeted guess-the-phone-number attempt against one order can't ride the
+  // much larger general API budget.
+  const paymentGuestLimiter = rateLimit({ windowMs: 15 * 60 * 1000, max: 30 });
+  app.use('/api/payments/status/', paymentGuestLimiter);
+  app.use('/api/payments/initiate', paymentGuestLimiter);
 }
 
 // ── Health check ──

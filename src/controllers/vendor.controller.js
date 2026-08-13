@@ -4,6 +4,8 @@
 // ═══════════════════════════════════════════════════════════
 
 const prisma = require('../config/prisma');
+const { validEnum } = require('../utils/pagination');
+const VENDOR_STATUSES = ['PENDING', 'APPROVED', 'REJECTED', 'SUSPENDED'];
 const {
   sendVendorApprovedSms, sendAccountSuspendedSms, sendAccountReactivatedSms, sendAccountRejectedSms,
 } = require('../services/sms.service');
@@ -84,7 +86,8 @@ exports.getReferral = async (req, res, next) => {
 // ─────────────────────────────────────────────
 exports.listVendors = async (req, res, next) => {
   try {
-    const { status, zoneId } = req.query;
+    const { status: rawStatus, zoneId } = req.query;
+    const status = validEnum(rawStatus, VENDOR_STATUSES);
 
     const vendors = await prisma.user.findMany({
       where: {
@@ -197,8 +200,11 @@ exports.toggleSuspend = async (req, res, next) => {
     const suspending = existing.vendorStatus === 'APPROVED';
     const vendor = await prisma.user.update({
       where: { id: existing.id },
+      // Suspending also revokes any live session immediately, same reasoning
+      // as freeze — accountBlockedMessage would catch a re-login anyway, but
+      // an already-issued token shouldn't keep working until it expires.
       data: suspending
-        ? { vendorStatus: 'SUSPENDED', rejectedReason: reason || 'Account suspended' }
+        ? { vendorStatus: 'SUSPENDED', rejectedReason: reason || 'Account suspended', tokenVersion: { increment: 1 } }
         : { vendorStatus: 'APPROVED', rejectedReason: null },
     });
 

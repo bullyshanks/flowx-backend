@@ -5,6 +5,7 @@
 
 const prisma = require('../config/prisma');
 const { getVendorWalletSummary, getRiderWalletSummary } = require('../services/ledger.service');
+const { clampTake, clampSkip } = require('../utils/pagination');
 
 // ─────────────────────────────────────────────
 // GET /api/vendors/wallet — balance summary
@@ -31,14 +32,14 @@ exports.getWallet = async (req, res, next) => {
 // ─────────────────────────────────────────────
 exports.getTransactions = async (req, res, next) => {
   try {
-    const { limit = 20, offset = 0 } = req.query;
+    const { limit, offset } = req.query;
 
     const [entries, total] = await Promise.all([
       prisma.ledgerEntry.findMany({
         where: { vendorId: req.user.id },
         orderBy: { createdAt: 'desc' },
-        take: Number(limit),
-        skip: Number(offset),
+        take: clampTake(limit),
+        skip: clampSkip(offset),
         include: { order: { select: { orderNumber: true, paymentMethod: true } } },
       }),
       prisma.ledgerEntry.count({ where: { vendorId: req.user.id } }),
@@ -90,14 +91,14 @@ exports.getRiderWallet = async (req, res, next) => {
 // ─────────────────────────────────────────────
 exports.getRiderTransactions = async (req, res, next) => {
   try {
-    const { limit = 20, offset = 0 } = req.query;
+    const { limit, offset } = req.query;
 
     const [entries, total] = await Promise.all([
       prisma.riderLedgerEntry.findMany({
         where: { riderId: req.user.id },
         orderBy: { createdAt: 'desc' },
-        take: Number(limit),
-        skip: Number(offset),
+        take: clampTake(limit),
+        skip: clampSkip(offset),
         include: { order: { select: { orderNumber: true, paymentMethod: true } } },
       }),
       prisma.riderLedgerEntry.count({ where: { riderId: req.user.id } }),

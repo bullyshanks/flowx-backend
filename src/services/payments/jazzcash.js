@@ -7,6 +7,7 @@
 //
 // Docs: https://sandbox.jazzcash.com.pk/  (Merchant Portal → Integration)
 const crypto = require('crypto');
+const { safeCompare } = require('../../utils/safeCompare');
 
 const MERCHANT_ID = process.env.JAZZCASH_MERCHANT_ID;
 const PASSWORD = process.env.JAZZCASH_PASSWORD;
@@ -80,7 +81,7 @@ function buildRequest({ reference, amount, callbackUrl, description }) {
 function parseCallback(payload) {
   const expected = sign(payload);
   const received = String(payload.pp_SecureHash || '').toUpperCase();
-  const signatureValid = expected === received;
+  const signatureValid = safeCompare(expected, received);
 
   const code = String(payload.pp_ResponseCode || '');
   return {

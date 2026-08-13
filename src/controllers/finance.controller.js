@@ -8,6 +8,8 @@ const prisma = require('../config/prisma');
 const { getVendorWalletSummary, getRiderWalletSummary, round2 } = require('../services/ledger.service');
 const { unassignVendorOrders } = require('../services/assignment.service');
 const paymentService = require('../services/payment.service');
+const { clampTake, clampSkip, validEnum } = require('../utils/pagination');
+const REFUND_STATUSES = ['PENDING', 'APPROVED', 'REJECTED', 'PAID'];
 const {
   sendRefundPaidSms, sendRefundRejectedSms, sendVendorSettlementPaidSms, sendRiderSettlementPaidSms,
   sendAccountFrozenSms, sendAccountUnfrozenSms, sendPaymentReceivedSms,
@@ -413,14 +415,14 @@ exports.getVendorWallet = async (req, res, next) => {
       return res.status(404).json({ success: false, message: 'Vendor not found' });
     }
 
-    const { limit = 20, offset = 0 } = req.query;
+    const { limit, offset } = req.query;
     const [summary, entries, total] = await Promise.all([
       getVendorWalletSummary(vendor.id),
       prisma.ledgerEntry.findMany({
         where: { vendorId: vendor.id },
         orderBy: { createdAt: 'desc' },
-        take: Number(limit),
-        skip: Number(offset),
+        take: clampTake(limit),
+        skip: clampSkip(offset),
         include: { order: { select: { orderNumber: true, paymentMethod: true } } },
       }),
       prisma.ledgerEntry.count({ where: { vendorId: vendor.id } }),
@@ -460,14 +462,14 @@ exports.getRiderWallet = async (req, res, next) => {
       return res.status(404).json({ success: false, message: 'Rider not found' });
     }
 
-    const { limit = 20, offset = 0 } = req.query;
+    const { limit, offset } = req.query;
     const [summary, entries, total, settlements] = await Promise.all([
       getRiderWalletSummary(rider.id),
       prisma.riderLedgerEntry.findMany({
         where: { riderId: rider.id },
         orderBy: { createdAt: 'desc' },
-        take: Number(limit),
-        skip: Number(offset),
+        take: clampTake(limit),
+        skip: clampSkip(offset),
         include: { order: { select: { orderNumber: true, paymentMethod: true } } },
       }),
       prisma.riderLedgerEntry.count({ where: { riderId: rider.id } }),
@@ -535,7 +537,10 @@ exports.toggleFreeze = async (req, res, next) => {
     const isFrozen = typeof req.body.isFrozen === 'boolean' ? req.body.isFrozen : !vendor.isFrozen;
     const updated = await prisma.user.update({
       where: { id: vendor.id },
-      data: { isFrozen },
+      // Freezing kills any live session immediately rather than waiting for
+      // the JWT to expire — the whole point of freezing someone is to stop
+      // them acting right now.
+      data: isFrozen ? { isFrozen, tokenVersion: { increment: 1 } } : { isFrozen },
       select: { id: true, name: true, phone: true, isFrozen: true },
     });
 
@@ -910,7 +915,7 @@ async function orderClawbackCeilings(orderId) {
 // ─────────────────────────────────────────────
 exports.listRefunds = async (req, res, next) => {
   try {
-    const { status } = req.query;
+    const status = validEnum(req.query.status, REFUND_STATUSES);
     const refunds = await prisma.refund.findMany({
       where: status ? { status } : undefined,
       orderBy: { createdAt: 'desc' },

@@ -135,6 +135,12 @@ exports.registerCustomer = async (req, res, next) => {
     if (!name || !phone) {
       return res.status(400).json({ success: false, message: 'Name and phone are required' });
     }
+    // Password is optional for customers (OTP login always works without
+    // one), but if they do set one it should meet the same floor vendors and
+    // riders already have — a 1-character password was previously accepted.
+    if (password && String(password).length < 6) {
+      return res.status(400).json({ success: false, message: 'Password must be at least 6 characters' });
+    }
 
     const existing = await prisma.user.findUnique({ where: { phone } });
     if (existing) {
@@ -305,6 +311,15 @@ exports.registerRider = async (req, res, next) => {
 // ─────────────────────────────────────────────
 const MAX_DATA_URI_LENGTH = 4 * 1024 * 1024; // ~4MB string (~3MB image) per file
 
+// Only ever a base64 data: URI of an actual raster image — not an arbitrary
+// URL. Two reasons: (1) the size cap below only fired for strings starting
+// with "data:", so any other string (e.g. a bare https:// URL) bypassed size
+// checking entirely, bounded only by the 15MB JSON body limit; (2) these
+// values are rendered as <img src> straight into the admin KYC review UI —
+// an attacker-controlled URL there is a way to beacon the admin's IP/UA and
+// the exact review timestamp to an external host on every review.
+const KYC_DATA_URI_RE = /^data:image\/(png|jpe?g|webp);base64,[A-Za-z0-9+/]+=*$/;
+
 exports.submitKyc = async (req, res, next) => {
   try {
     const { cnicFront, cnicBack, selfieUrl } = req.body;
@@ -314,7 +329,10 @@ exports.submitKyc = async (req, res, next) => {
     }
 
     for (const [field, value] of Object.entries({ cnicFront, cnicBack, selfieUrl })) {
-      if (value.startsWith('data:') && value.length > MAX_DATA_URI_LENGTH) {
+      if (typeof value !== 'string' || !KYC_DATA_URI_RE.test(value)) {
+        return res.status(400).json({ success: false, message: `${field} must be a base64-encoded PNG/JPEG/WEBP image` });
+      }
+      if (value.length > MAX_DATA_URI_LENGTH) {
         return res.status(413).json({ success: false, message: `${field} is too large (max ~3MB image)` });
       }
     }
@@ -333,13 +351,49 @@ exports.submitKyc = async (req, res, next) => {
 
 // ─────────────────────────────────────────────
 // Send OTP (for login or verification)
+//
+// Two controls beyond the global IP rate limiter, both keyed on phone+purpose
+// so they can't be dodged by rotating source IPs:
+//   - cooldown: refuse a resend within OTP_RESEND_COOLDOWN_MS of the last one
+//   - window cap: refuse beyond OTP_MAX_SENDS_PER_WINDOW sends in OTP_SEND_WINDOW_MS,
+//     which also bounds how many simultaneously-valid codes can ever exist
+//     for one phone number regardless of how many times send is called
+// Sending a fresh code also invalidates every prior unconsumed one for that
+// phone+purpose, so only the latest code is ever guessable.
 // ─────────────────────────────────────────────
+const OTP_RESEND_COOLDOWN_MS = 30 * 1000;
+const OTP_SEND_WINDOW_MS = 15 * 60 * 1000;
+const OTP_MAX_SENDS_PER_WINDOW = 5;
+const OTP_MAX_ATTEMPTS = 5;
+
 exports.sendOtp = async (req, res, next) => {
   try {
     const { phone, purpose = 'login' } = req.body;
     if (!phone) {
       return res.status(400).json({ success: false, message: 'Phone is required' });
     }
+
+    const windowStart = new Date(Date.now() - OTP_SEND_WINDOW_MS);
+    const recent = await prisma.otp.findMany({
+      where: { phone, purpose, createdAt: { gt: windowStart } },
+      orderBy: { createdAt: 'desc' },
+      take: OTP_MAX_SENDS_PER_WINDOW,
+    });
+
+    if (recent.length > 0 && Date.now() - recent[0].createdAt.getTime() < OTP_RESEND_COOLDOWN_MS) {
+      return res.status(429).json({ success: false, message: 'Please wait before requesting another code' });
+    }
+    if (recent.length >= OTP_MAX_SENDS_PER_WINDOW) {
+      return res.status(429).json({ success: false, message: 'Too many codes requested. Try again later.' });
+    }
+
+    // Invalidate every still-live code for this phone+purpose so at most one
+    // code is ever valid at a time — otherwise each send widens the guessable
+    // space instead of replacing it.
+    await prisma.otp.updateMany({
+      where: { phone, purpose, consumedAt: null, expiresAt: { gt: new Date() } },
+      data: { expiresAt: new Date() },
+    });
 
     const code = generateOtp();
     await prisma.otp.create({
@@ -360,6 +414,18 @@ exports.sendOtp = async (req, res, next) => {
 
 // ─────────────────────────────────────────────
 // Verify OTP — returns JWT
+//
+// Attempts are tracked on the OTP row itself: every wrong guess against the
+// current live code increments `attempts`, and the code is rejected outright
+// once OTP_MAX_ATTEMPTS is hit — even if the correct code is later supplied —
+// forcing a fresh sendOtp call. This closes the brute-force gap where the
+// `attempts` column existed in schema but nothing ever read or wrote it.
+//
+// ADMIN accounts cannot authenticate via OTP at all. OTP is a password-free
+// channel gated only by SMS delivery to a phone number — the seeded admin
+// phone is published in this repo's own docs, so allowing OTP login for
+// ADMIN would make the documented default phone number a full authentication
+// bypass. Admins must use password login.
 // ─────────────────────────────────────────────
 exports.verifyOtp = async (req, res, next) => {
   try {
@@ -368,18 +434,25 @@ exports.verifyOtp = async (req, res, next) => {
       return res.status(400).json({ success: false, message: 'Phone and code are required' });
     }
 
+    const existingUser = await prisma.user.findUnique({ where: { phone } });
+    if (existingUser && existingUser.role === 'ADMIN') {
+      return res.status(403).json({ success: false, message: 'Admin accounts must sign in with a password' });
+    }
+
+    // Latest live (unconsumed, unexpired) code for this phone+purpose,
+    // matched on phone+purpose only — not on the submitted code — so a wrong
+    // guess still resolves to a row whose attempts counter we can increment.
     const otp = await prisma.otp.findFirst({
-      where: {
-        phone,
-        code,
-        purpose,
-        consumedAt: null,
-        expiresAt: { gt: new Date() },
-      },
+      where: { phone, purpose, consumedAt: null, expiresAt: { gt: new Date() } },
       orderBy: { createdAt: 'desc' },
     });
 
-    if (!otp) {
+    if (!otp || otp.attempts >= OTP_MAX_ATTEMPTS) {
+      return res.status(400).json({ success: false, message: 'Invalid or expired OTP' });
+    }
+
+    if (otp.code !== code) {
+      await prisma.otp.update({ where: { id: otp.id }, data: { attempts: { increment: 1 } } });
       return res.status(400).json({ success: false, message: 'Invalid or expired OTP' });
     }
 
@@ -390,7 +463,7 @@ exports.verifyOtp = async (req, res, next) => {
     });
 
     // Get or create user
-    let user = await prisma.user.findUnique({ where: { phone } });
+    let user = existingUser;
     if (!user) {
       user = await prisma.user.create({
         data: { phone, name: 'FlowX User', role: 'CUSTOMER', isVerified: true },
@@ -408,7 +481,7 @@ exports.verifyOtp = async (req, res, next) => {
 
     if (user.role === 'CUSTOMER') await backfillGuestOrders(phone, user.id);
 
-    const token = signToken({ id: user.id, role: user.role });
+    const token = signToken({ id: user.id, role: user.role, tokenVersion: user.tokenVersion });
 
     res.json({
       success: true,
@@ -446,7 +519,7 @@ exports.login = async (req, res, next) => {
 
     if (user.role === 'CUSTOMER') await backfillGuestOrders(user.phone, user.id);
 
-    const token = signToken({ id: user.id, role: user.role });
+    const token = signToken({ id: user.id, role: user.role, tokenVersion: user.tokenVersion });
 
     res.json({
       success: true,
@@ -514,6 +587,26 @@ exports.updateMe = async (req, res, next) => {
     if (err.code === 'P2002') {
       return res.status(409).json({ success: false, message: 'That email is already in use' });
     }
+    next(err);
+  }
+};
+
+// ─────────────────────────────────────────────
+// Invalidate every JWT previously issued to this account. Bumping
+// tokenVersion makes every existing token's embedded claim stale, so the
+// next request on any of them hits requireAuth's version check and is
+// rejected — including the token used to make this very call, which is why
+// the response can't rely on being able to make another authenticated call
+// right after.
+// ─────────────────────────────────────────────
+exports.logoutAll = async (req, res, next) => {
+  try {
+    await prisma.user.update({
+      where: { id: req.user.id },
+      data: { tokenVersion: { increment: 1 } },
+    });
+    res.json({ success: true, message: 'Logged out of all sessions' });
+  } catch (err) {
     next(err);
   }
 };
