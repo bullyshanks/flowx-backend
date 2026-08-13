@@ -66,6 +66,36 @@ SMS_SENDER_ID=FlowX
 - Runs on Railway-assigned `PORT` (currently 8080) — must match the target port set in Settings → Networking → domain, or you get 502s.
 - Backend + Postgres **must be in the same Railway project** to use `${{Postgres.DATABASE_URL}}` variable reference.
 
+## Deployment (Azure App Service)
+Second deployment, added Aug 2026, alongside Railway. Shares nothing with it — separate database, separate secrets.
+
+- **Live**: https://app-flowx-api-sh42.azurewebsites.net/api/health
+- **Deploy**: push to `azure-deployment` → GitHub Actions. The job polls `/api/health` after deploying, so a green run means the app actually booted and reached Postgres, not just that the zip landed.
+- Auth is OIDC federated credentials **pinned to that exact branch**. Merging to `main` needs a new credential for `refs/heads/main` plus `main` in the workflow's `branches:`, or pushes silently stop deploying.
+
+### Secrets come from Key Vault, not app settings
+`DATABASE_URL`, `JWT_SECRET` and `ADMIN_PASSWORD` are `@Microsoft.KeyVault(SecretUri=...)` references in `kv-flowx-sh42`, resolved at startup via the app's system-assigned managed identity. No plaintext in app settings. If a reference fails to resolve the app sees the literal `@Microsoft.KeyVault(...)` string — Prisma then throws a URL parse error, which is the giveaway.
+
+### Differences from Railway (don't copy Railway's setup here)
+- Startup is `npm start` only. **No `prisma migrate deploy` on boot** — migrations are a deliberate step, run from an allowlisted machine. The CI pipeline does not run them, because that would mean opening the Postgres firewall to GitHub's rotating IPs.
+- Uses `migrate deploy` against real migration files, not `db push --accept-data-loss`.
+- The seed runs once, manually — not on every deploy.
+
+### Running migrations against Azure
+From a machine whose IP is in the Postgres firewall (`az postgres flexible-server firewall-rule list -s psql-flowx-sh42 -g rg-flowx`):
+```
+mv .env .env.local.bak
+export DATABASE_URL="postgresql://flowxadmin:PASSWORD@psql-flowx-sh42.postgres.database.azure.com:5432/flowx_db?sslmode=require"
+npx prisma migrate deploy
+mv .env.local.bak .env
+```
+`?sslmode=require` is mandatory — Azure Postgres rejects unencrypted connections. Home IPs rotate, so re-add the firewall rule if migrations start timing out.
+
+### Gotchas
+- Both apps share one B1 plan (1 vCore). A heavy build on either can starve the other — this took the API down for an hour once.
+- `GET /` returns 404 constantly in logs: that's Always On pinging the site root, which mounts no route. Harmless, but it inflates the failure count in App Insights.
+- App Insights records nothing during a total outage — it instruments the process, so a dead process reports nothing. Availability tests (`avail-flowx-api`) cover that gap and email on failure.
+
 ## Payments
 - Three gateways wired: **JazzCash**, **Easypaisa** (both signed form POST + return callback) and **Safepay** (API-created tracker + signed webhook, used for `CARD`).
 - `PaymentMethod` → provider: `JAZZCASH`→JazzCash, `EASYPAISA`→Easypaisa, `CARD`→Safepay. `COD` and `BANK_TRANSFER` never touch a gateway.
