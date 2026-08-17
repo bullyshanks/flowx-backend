@@ -13,6 +13,11 @@ const prisma = require('../config/prisma');
 // in use; add an origin here before shipping support for a new browser.
 const ALLOWED_PUSH_HOSTS = [
   'fcm.googleapis.com', // Chrome/Edge/Android
+  // Legacy GCM host. Older Chrome builds still hand out
+  // https://android.googleapis.com/gcm/send/<token> instead of the fcm.* one,
+  // and leaving it out silently rejects those users at subscribe time — found
+  // by driving the real subscribe flow in a browser rather than by reading.
+  'android.googleapis.com',
   'updates.push.services.mozilla.com', // Firefox
   'notify.windows.com', 'wns2-*.notify.windows.com', // legacy Edge/WNS
   'push.apple.com', // Safari/WebKit (web.push.apple.com and *.push.apple.com subdomains)
