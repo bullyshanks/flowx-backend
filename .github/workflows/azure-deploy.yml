@@ -16,7 +16,60 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  # Gate: nothing reaches Azure unless this passes. It boots the real app
+  # against a throwaway Postgres on the runner, so it catches the failures that
+  # have actually taken production down: a crash on startup, or a migration that
+  # doesn't apply cleanly. It does not touch the Azure database.
+  check:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: flowx
+          POSTGRES_PASSWORD: flowx
+          POSTGRES_DB: flowx_ci
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd "pg_isready -U flowx"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    # Throwaway values for the runner only — none of these are real secrets.
+    env:
+      DATABASE_URL: postgresql://flowx:flowx@localhost:5432/flowx_ci
+      JWT_SECRET: ci-only-not-a-real-secret
+      FRONTEND_URL: http://localhost:3000
+      NODE_ENV: development
+      PORT: 4000
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      # npm ci installs exactly what package-lock.json says (and fails if the
+      # lock is out of sync with package.json), so CI tests what Azure will run.
+      - run: npm ci
+
+      - name: Syntax-check every source file
+        run: find src prisma tests -name '*.js' -print0 | xargs -0 -n1 node --check
+
+      - name: Apply migrations to a fresh database
+        run: npx prisma migrate deploy
+
+      - name: Boot the API and hit /api/health
+        run: |
+          npm start > api.log 2>&1 &
+          for i in $(seq 1 30); do
+            if curl -sf http://localhost:4000/api/health > /dev/null; then echo "API booted"; exit 0; fi
+            sleep 1
+          done
+          echo "::error::API did not boot"; cat api.log; exit 1
+
   deploy:
+    needs: check
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
